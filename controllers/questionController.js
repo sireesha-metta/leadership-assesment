@@ -17,6 +17,7 @@ function parseOptions(optionsStr) {
 }
 
 function normalizeAnswerText(value) {
+  alert("I am here in auth controller tp read the questions");
   if (!value) return "";
   return String(value)
     .replace(/^[A-Da-d]\.?\s*/, "")
