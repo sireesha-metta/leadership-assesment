@@ -1,17 +1,11 @@
 const jwt = require("jsonwebtoken");
-const users = require("../utils/seedUsers");
+const db = require("../config/db");
 
 function signToken(user) {
   return jwt.sign(
-    {
-      id: user.id,
-      role: user.role,
-      email: user.email,
-    },
+    { id: user.id, role: user.role, email: user.email },
     process.env.JWT_SECRET,
-    {
-      expiresIn: process.env.JWT_EXPIRES_IN || "8h",
-    }
+    { expiresIn: process.env.JWT_EXPIRES_IN || "8h" }
   );
 }
 
@@ -20,29 +14,21 @@ exports.login = async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({
-        message: "Email and password are required",
-      });
+      return res.status(400).json({ success: false, message: "Email and password are required" });
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
-    const user = users.find((u) => u.email.toLowerCase() === normalizedEmail);
+    const [rows] = await db.execute(
+      "SELECT * FROM Respondent WHERE email = ? AND status = 'Active'",
+      [normalizedEmail]
+    );
 
-    if (!user) {
-      return res.status(401).json({
-        message: "Invalid credentials",
-      });
+    if (rows.length === 0 || String(password) !== String(rows[0].password)) {
+      return res.status(401).json({ success: false, message: "Invalid email or password" });
     }
 
-    const validPassword = String(password) === String(user.password);
-
-    if (!validPassword) {
-      return res.status(401).json({
-        message: "Invalid credentials",
-      });
-    }
-
-    const token = signToken(user);
+    const user = rows[0];
+    const token = signToken({ id: user.id, role: user.role, email: user.email });
     const decoded = jwt.decode(token);
     const expiresAt = decoded?.exp ? decoded.exp * 1000 : null;
 
@@ -52,38 +38,118 @@ exports.login = async (req, res) => {
         token,
         user: {
           id: user.id,
-          name: user.name,
+          firstname: user.firstname,
+          lastname: user.lastname,
           email: user.email,
           role: user.role,
+          mobile: user.mobile || "",
         },
         expiresAt,
       },
     });
   } catch (error) {
     console.error(error);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.register = async (req, res) => {
+  try {
+    const { firstName, lastName, mobile, email, password } = req.body;
+
+    if (!firstName || !lastName || !email || !password) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    const [existing] = await db.execute(
+      "SELECT id FROM Respondent WHERE email = ?",
+      [String(email).trim().toLowerCase()]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({ success: false, message: "Email already exists" });
+    }
+
+    const [result] = await db.execute(
+      "INSERT INTO Respondent (firstname, lastname, mobile, email, password) VALUES (?, ?, ?, ?, ?)",
+      [firstName, lastName, mobile || "", String(email).trim().toLowerCase(), password]
+    );
+
+    return res.status(201).json({ success: true, message: "Registration successful", id: result.insertId });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
 exports.me = async (req, res) => {
-  const user = users.find((u) => String(u.id) === String(req.user.id));
-  if (!user) {
-    return res.status(404).json({ message: "User not found" });
-  }
+  try {
+    const [rows] = await db.execute(
+      "SELECT id, firstname, lastname, email, role, mobile FROM Respondent WHERE id = ?",
+      [req.user.id]
+    );
 
-  return res.json({
-    success: true,
-    data: {
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const user = rows[0];
+    return res.json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          firstname: user.firstname,
+          lastname: user.lastname,
+          email: user.email,
+          role: user.role,
+          mobile: user.mobile || "",
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
 };
 
 exports.logout = async (_req, res) => {
   return res.json({ success: true });
+};
+
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: "Current and new password are required." });
+    }
+
+    const [rows] = await db.execute(
+      "SELECT id, password FROM Respondent WHERE id = ?",
+      [req.user.id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (String(currentPassword) !== String(rows[0].password)) {
+      return res.status(403).json({ success: false, message: "Current password is incorrect." });
+    }
+
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({ success: false, message: "New password must be at least 8 characters." });
+    }
+
+    if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(String(newPassword))) {
+      return res.status(400).json({ success: false, message: "Password must contain uppercase, lowercase and number." });
+    }
+
+    await db.execute("UPDATE Respondent SET password = ? WHERE id = ?", [String(newPassword), req.user.id]);
+    return res.json({ success: true, message: "Password updated successfully." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
 };

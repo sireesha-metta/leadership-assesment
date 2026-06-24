@@ -17,7 +17,6 @@ function parseOptions(optionsStr) {
 }
 
 function normalizeAnswerText(value) {
-  alert("I am here in auth controller tp read the questions");
   if (!value) return "";
   return String(value)
     .replace(/^[A-Da-d]\.?\s*/, "")
@@ -107,6 +106,47 @@ exports.getQuestions = (req, res) => {
     console.error(error);
     return res.status(500).json({
       message: "Failed to read questions file",
+      details: error.message,
+    });
+  }
+};
+
+exports.saveAnswers = (req, res) => {
+  try {
+    const { answers } = req.body || {};
+    if (!answers || typeof answers !== "object") {
+      return res.status(400).json({ success: false, message: "Invalid payload" });
+    }
+
+    const filePath =
+      process.env.QUESTIONS_FILE_PATH ||
+      path.join(process.cwd(), "Leadership_Reset_Diagnostic_NR.xlsx");
+    const sheetName = process.env.QUESTIONS_SHEET_NAME || "Diagnostic";
+
+    const workbook = XLSX.readFile(filePath);
+    const worksheet = workbook.Sheets[sheetName];
+
+    if (!worksheet) {
+      return res.status(400).json({ success: false, message: `Sheet '${sheetName}' not found` });
+    }
+
+    for (const [rowIdx, value] of Object.entries(answers)) {
+      const cellRef = `D${Number(rowIdx) + 1}`;
+      if (!worksheet[cellRef]) {
+        worksheet[cellRef] = { t: "s", v: value };
+      } else {
+        worksheet[cellRef].v = value;
+        worksheet[cellRef].t = "s";
+      }
+    }
+
+    XLSX.writeFile(workbook, filePath);
+    return res.json({ success: true, message: "Answers saved to Excel file." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to save answers",
       details: error.message,
     });
   }
