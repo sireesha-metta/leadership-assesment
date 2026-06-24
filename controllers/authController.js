@@ -1,6 +1,13 @@
 const jwt = require("jsonwebtoken");
 const db = require("../config/db");
 
+function normalizeRole(role) {
+  const normalized = String(role || "").trim().toLowerCase();
+  if (normalized === "admin") return "ADMIN";
+  if (normalized === "respondent") return "RESPONDENT";
+  return String(role || "").trim().toUpperCase();
+}
+
 function signToken(user) {
   return jwt.sign(
     { id: user.id, role: user.role, email: user.email },
@@ -27,8 +34,9 @@ exports.login = async (req, res) => {
       return res.status(401).json({ success: false, message: "Invalid email or password" });
     }
 
-    const user = rows[0];
-    const token = signToken({ id: user.id, role: user.role, email: user.email });
+  const user = rows[0];
+  const normalizedRole = normalizeRole(user.role);
+  const token = signToken({ id: user.id, role: normalizedRole, email: user.email });
     const decoded = jwt.decode(token);
     const expiresAt = decoded?.exp ? decoded.exp * 1000 : null;
 
@@ -41,7 +49,7 @@ exports.login = async (req, res) => {
           firstname: user.firstname,
           lastname: user.lastname,
           email: user.email,
-          role: user.role,
+          role: normalizedRole,
           mobile: user.mobile || "",
         },
         expiresAt,
@@ -102,7 +110,7 @@ exports.me = async (req, res) => {
           firstname: user.firstname,
           lastname: user.lastname,
           email: user.email,
-          role: user.role,
+          role: normalizeRole(user.role),
           mobile: user.mobile || "",
         },
       },
