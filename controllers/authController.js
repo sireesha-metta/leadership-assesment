@@ -162,6 +162,37 @@ exports.changePassword = async (req, res) => {
   }
 };
 
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email, newPassword } = req.body || {};
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const normalizedPassword = String(newPassword || "");
+
+    if (!normalizedEmail || !normalizedPassword) {
+      return res.status(400).json({ success: false, message: "Email and new password are required." });
+    }
+
+    const [rows] = await db.execute(
+      "SELECT id FROM Respondent WHERE email = ? AND status = 'Active'",
+      [normalizedEmail]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found for this email." });
+    }
+
+    await db.execute(
+      "UPDATE Respondent SET password = ? WHERE id = ?",
+      [normalizedPassword, rows[0].id]
+    );
+
+    return res.json({ success: true, message: "Password updated successfully." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 exports.updateProfile = async (req, res) => {
   try {
     const { firstName, lastName, mobile } = req.body || {};
