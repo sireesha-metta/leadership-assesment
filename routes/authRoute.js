@@ -3,12 +3,13 @@ const router = express.Router();
 const db = require("../config/db");
 const authMiddleware = require("../middleware/authMiddleware");
 const allowRoles = require("../middleware/roleMiddleware");
-const { login, register, me, logout, changePassword } = require("../controllers/authController");
+const { login, register, me, updateProfile, logout, changePassword } = require("../controllers/authController");
 
 router.post("/login", login);
 router.post("/register", register);
 router.post("/logout", authMiddleware, logout);
 router.get("/me", authMiddleware, me);
+router.put("/profile", authMiddleware, updateProfile);
 router.post("/change-password", authMiddleware, changePassword);
 
 router.get("/test", (req, res) => {

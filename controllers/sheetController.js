@@ -2,6 +2,7 @@ const DEFAULT_SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbytHuWxCiTwSTM-1gbpt2UgWzGXWDhZD-QqllAyC6Tcy_xxrdD--Kk2QBjYGcXbubfY/exec";
 const UPSTREAM_TIMEOUT_MS = Number(process.env.GOOGLE_SCRIPT_TIMEOUT_MS || 30000);
 const UPSTREAM_RETRY_COUNT = Number(process.env.GOOGLE_SCRIPT_RETRY_COUNT || 1);
+const db = require("../config/db");
 
 const ROW_TO_QKEY = {
   6: "q1",
@@ -96,6 +97,123 @@ function parseTextResult(rawText) {
     };
   }
 }
+
+function normalizeDraftPayload(input) {
+  return {
+    respondent: String(input.respondent || "Anonymous"),
+    savedAt: input.savedAt || new Date().toISOString(),
+    answersByRow: { ...(input.answersByRow || {}) },
+    answeredCount: Number(input.answeredCount || 0),
+    totalQuestions: Number(input.totalQuestions || 0),
+    totalScore: Number(input.totalScore || 0),
+    totalWeightedScore: Number(input.totalWeightedScore || 0),
+    questionResponses: Array.isArray(input.questionResponses) ? input.questionResponses : [],
+  };
+}
+
+exports.saveDraft = async (req, res) => {
+  try {
+    const payload = normalizeDraftPayload(req.body || {});
+
+    if (!payload.respondent.trim()) {
+      return res.status(400).json({ success: false, message: "Respondent name is required." });
+    }
+
+    if (Object.keys(payload.answersByRow).length === 0) {
+      return res.status(400).json({ success: false, message: "At least one answer is required to save a draft." });
+    }
+
+    await db.execute(
+      `INSERT INTO assessment_drafts
+        (respondent_id, assessment_type, respondent_name, answered_count, draft_payload)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+        respondent_name = VALUES(respondent_name),
+        answered_count = VALUES(answered_count),
+        draft_payload = VALUES(draft_payload),
+        updated_at = CURRENT_TIMESTAMP`,
+      [
+        req.user.id,
+        "leadership_reset",
+        payload.respondent,
+        payload.answeredCount,
+        JSON.stringify(payload),
+      ]
+    );
+
+    return res.json({
+      success: true,
+      message: `Draft saved. You answered ${payload.answeredCount} questions.`,
+      data: payload,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to save draft",
+      details: error.message,
+    });
+  }
+};
+
+exports.getDraft = async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT respondent_name, answered_count, draft_payload, updated_at
+       FROM assessment_drafts
+       WHERE respondent_id = ? AND assessment_type = ?`,
+      [req.user.id, "leadership_reset"]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "No draft found." });
+    }
+
+    const row = rows[0];
+    const payload = typeof row.draft_payload === "string"
+      ? JSON.parse(row.draft_payload)
+      : row.draft_payload;
+
+    return res.json({
+      success: true,
+      data: {
+        ...payload,
+        respondent: payload.respondent || row.respondent_name,
+        answeredCount: Number(payload.answeredCount || row.answered_count || 0),
+        savedAt: payload.savedAt || row.updated_at,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load draft",
+      details: error.message,
+    });
+  }
+};
+
+exports.deleteDraft = async (req, res) => {
+  try {
+    const [result] = await db.execute(
+      `DELETE FROM assessment_drafts
+       WHERE respondent_id = ? AND assessment_type = ?`,
+      [req.user.id, "leadership_reset"]
+    );
+
+    return res.json({
+      success: true,
+      message: result.affectedRows > 0 ? "Draft cleared." : "No draft found to clear.",
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to clear draft",
+      details: error.message,
+    });
+  }
+};
 
 exports.submitAssessment = async (req, res) => {
   try {

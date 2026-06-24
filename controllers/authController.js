@@ -161,3 +161,51 @@ exports.changePassword = async (req, res) => {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+exports.updateProfile = async (req, res) => {
+  try {
+    const { firstName, lastName, mobile } = req.body || {};
+
+    if (!String(firstName || "").trim() || !String(lastName || "").trim()) {
+      return res.status(400).json({ success: false, message: "First name and last name are required." });
+    }
+
+    await db.execute(
+      "UPDATE Respondent SET firstname = ?, lastname = ?, mobile = ? WHERE id = ?",
+      [
+        String(firstName).trim(),
+        String(lastName).trim(),
+        String(mobile || "").trim(),
+        req.user.id,
+      ]
+    );
+
+    const [rows] = await db.execute(
+      "SELECT id, firstname, lastname, email, role, mobile FROM Respondent WHERE id = ?",
+      [req.user.id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const user = rows[0];
+    return res.json({
+      success: true,
+      message: "Profile updated successfully.",
+      data: {
+        user: {
+          id: user.id,
+          firstname: user.firstname,
+          lastname: user.lastname,
+          email: user.email,
+          role: normalizeRole(user.role),
+          mobile: user.mobile || "",
+        },
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
