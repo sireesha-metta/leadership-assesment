@@ -16,6 +16,15 @@ function signToken(user) {
   );
 }
 
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function normalizeMobileDigits(mobile) {
+  const digits = String(mobile || "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
 exports.login = async (req, res) => {
   try {
     const { email, password, identifier, loginId, mobile } = req.body || {};
@@ -253,6 +262,78 @@ exports.updateProfile = async (req, res) => {
           role: normalizeRole(user.role),
           mobile: user.mobile || "",
         },
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.createAdmin = async (req, res) => {
+  try {
+    const { firstName, lastName, mobile, email, password } = req.body || {};
+
+    const normalizedFirstName = String(firstName || "").trim();
+    const normalizedLastName = String(lastName || "").trim();
+    const normalizedEmail = normalizeEmail(email);
+    const normalizedMobile = normalizeMobileDigits(mobile);
+    const normalizedPassword = String(password || "");
+
+    if (!normalizedFirstName || !normalizedLastName || !normalizedEmail || !normalizedPassword) {
+      return res.status(400).json({ success: false, message: "First name, last name, email and password are required." });
+    }
+
+    if (!/^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(normalizedEmail)) {
+      return res.status(400).json({ success: false, message: "Enter a valid email address." });
+    }
+
+    if (normalizedPassword.length < 8 || !/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(normalizedPassword)) {
+      return res.status(400).json({ success: false, message: "Password must be at least 8 chars and include uppercase, lowercase and number." });
+    }
+
+    if (normalizedMobile && !/^[6-9]\d{9}$/.test(normalizedMobile)) {
+      return res.status(400).json({ success: false, message: "Enter a valid 10-digit mobile number." });
+    }
+
+    const [existingByEmail] = await db.execute(
+      "SELECT id FROM Respondent WHERE LOWER(TRIM(email)) = ? LIMIT 1",
+      [normalizedEmail]
+    );
+
+    if (existingByEmail.length > 0) {
+      return res.status(400).json({ success: false, message: "Email already exists." });
+    }
+
+    if (normalizedMobile) {
+      const [existingByMobile] = await db.execute(
+        `SELECT id
+         FROM Respondent
+         WHERE RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(mobile AS CHAR)), ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 10) = ?
+         LIMIT 1`,
+        [normalizedMobile]
+      );
+
+      if (existingByMobile.length > 0) {
+        return res.status(400).json({ success: false, message: "Mobile number already exists." });
+      }
+    }
+
+    const [result] = await db.execute(
+      "INSERT INTO Respondent (firstname, lastname, mobile, email, password, role, status) VALUES (?, ?, ?, ?, ?, 'ADMIN', 'Active')",
+      [normalizedFirstName, normalizedLastName, normalizedMobile, normalizedEmail, normalizedPassword]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Admin user created successfully.",
+      data: {
+        id: result.insertId,
+        firstname: normalizedFirstName,
+        lastname: normalizedLastName,
+        email: normalizedEmail,
+        mobile: normalizedMobile,
+        role: "ADMIN",
       },
     });
   } catch (error) {

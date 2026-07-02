@@ -3,10 +3,11 @@ const router = express.Router();
 const db = require("../config/db");
 const authMiddleware = require("../middleware/authMiddleware");
 const allowRoles = require("../middleware/roleMiddleware");
-const { login, register, me, updateProfile, logout, changePassword, forgotPassword } = require("../controllers/authController");
+const { login, register, createAdmin, me, updateProfile, logout, changePassword, forgotPassword } = require("../controllers/authController");
 
 router.post("/login", login);
 router.post("/register", register);
+router.post("/admins", authMiddleware, allowRoles("ADMIN"), createAdmin);
 router.post("/forgot-password", forgotPassword);
 router.post("/logout", authMiddleware, logout);
 router.get("/me", authMiddleware, me);
