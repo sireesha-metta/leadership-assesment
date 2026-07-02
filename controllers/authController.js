@@ -18,23 +18,43 @@ function signToken(user) {
 
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, identifier, loginId, mobile } = req.body || {};
+    const rawIdentifier = String(identifier || loginId || email || mobile || "").trim();
+    const normalizedEmail = rawIdentifier.toLowerCase();
+    const numericIdentifier = rawIdentifier.replace(/\D/g, "");
+    const phone10 = numericIdentifier.length >= 10 ? numericIdentifier.slice(-10) : numericIdentifier;
 
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: "Email and password are required" });
+    if (!rawIdentifier || !password) {
+      return res.status(400).json({ success: false, message: "Email/mobile and password are required" });
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedMobile = phone10 || rawIdentifier;
     const [rows] = await db.execute(
-      "SELECT * FROM Respondent WHERE email = ? AND status = 'Active'",
-      [normalizedEmail]
+      `SELECT *
+       FROM Respondent
+       WHERE status = 'Active'
+         AND (
+           LOWER(TRIM(email)) = ?
+           OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(mobile AS CHAR)), ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', '') = ?
+           OR RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(TRIM(CAST(mobile AS CHAR)), ' ', ''), '-', ''), '(', ''), ')', ''), '+', ''), '.', ''), 10) = ?
+         )`,
+      [normalizedEmail, normalizedMobile, normalizedMobile]
     );
 
-    if (rows.length === 0 || String(password) !== String(rows[0].password)) {
-      return res.status(401).json({ success: false, message: "Invalid email or password" });
+    if (rows.length === 0) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
     }
 
-  const user = rows[0];
+    const passwordText = String(password).trim();
+    const matchedUser = rows.find(
+      (row) => String(row.password || "").trim() === passwordText
+    );
+
+    if (!matchedUser) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+
+  const user = matchedUser;
   const normalizedRole = normalizeRole(user.role);
   const token = signToken({ id: user.id, role: normalizedRole, email: user.email });
     const decoded = jwt.decode(token);
