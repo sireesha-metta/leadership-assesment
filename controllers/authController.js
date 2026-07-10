@@ -25,6 +25,85 @@ function normalizeMobileDigits(mobile) {
   return digits.length >= 10 ? digits.slice(-10) : digits;
 }
 
+function normalizeStatus(status) {
+  return String(status || "").trim().toLowerCase() === "inactive" ? "Inactive" : "Active";
+}
+
+async function listUsersByRole(role) {
+  const [rows] = await db.execute(
+    `SELECT id, firstname, lastname, mobile, email, status, created_at, updated_at
+     FROM Respondent
+     WHERE role = ?
+     ORDER BY id DESC`,
+    [role]
+  );
+
+  return rows.map((row) => ({
+    id: Number(row.id),
+    firstName: row.firstname || "",
+    lastName: row.lastname || "",
+    mobile: row.mobile || "",
+    email: row.email || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    status: normalizeStatus(row.status),
+  }));
+}
+
+async function updateUserByRoleAndId(role, id, payload) {
+  const fields = [];
+  const values = [];
+
+  if (payload.firstName !== undefined) {
+    fields.push("firstname = ?");
+    values.push(String(payload.firstName || "").trim());
+  }
+
+  if (payload.lastName !== undefined) {
+    fields.push("lastname = ?");
+    values.push(String(payload.lastName || "").trim());
+  }
+
+  if (payload.mobile !== undefined) {
+    fields.push("mobile = ?");
+    values.push(normalizeMobileDigits(payload.mobile));
+  }
+
+  if (payload.email !== undefined) {
+    fields.push("email = ?");
+    values.push(normalizeEmail(payload.email));
+  }
+
+  if (payload.status !== undefined) {
+    fields.push("status = ?");
+    values.push(normalizeStatus(payload.status));
+  }
+
+  if (fields.length === 0) {
+    return { success: false, reason: "NO_FIELDS" };
+  }
+
+  values.push(Number(id), role);
+
+  const [result] = await db.execute(
+    `UPDATE Respondent
+     SET ${fields.join(", ")}
+     WHERE id = ? AND role = ?`,
+    values
+  );
+
+  return { success: Number(result?.affectedRows || 0) > 0 };
+}
+
+async function deleteUserByRoleAndId(role, id) {
+  const [result] = await db.execute(
+    "DELETE FROM Respondent WHERE id = ? AND role = ?",
+    [Number(id), role]
+  );
+
+  return Number(result?.affectedRows || 0) > 0;
+}
+
 exports.login = async (req, res) => {
   try {
     const { email, password, identifier, loginId, mobile } = req.body || {};
@@ -341,3 +420,140 @@ exports.createAdmin = async (req, res) => {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+exports.getAdmins = async (_req, res) => {
+  try {
+    const admins = await listUsersByRole("ADMIN");
+    return res.json({
+      success: true,
+      data: admins,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.updateAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const payload = req.body || {};
+    const result = await updateUserByRoleAndId("ADMIN", id, payload);
+
+    if (!result.success && result.reason === "NO_FIELDS") {
+      return res.status(400).json({ success: false, message: "No fields provided to update." });
+    }
+
+    if (!result.success) {
+      return res.status(404).json({ success: false, message: "Admin not found." });
+    }
+
+    return res.json({ success: true, message: "Admin updated successfully." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.deleteAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await deleteUserByRoleAndId("ADMIN", id);
+
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: "Admin not found." });
+    }
+
+    return res.json({ success: true, message: "Admin deleted successfully." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.getRespondents = async (_req, res) => {
+  try {
+    const respondents = await listUsersByRole("RESPONDENT");
+    return res.json({
+      success: true,
+      data: respondents,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.updateRespondent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const payload = req.body || {};
+    const result = await updateUserByRoleAndId("RESPONDENT", id, payload);
+
+    if (!result.success && result.reason === "NO_FIELDS") {
+      return res.status(400).json({ success: false, message: "No fields provided to update." });
+    }
+
+    if (!result.success) {
+      return res.status(404).json({ success: false, message: "Respondent not found." });
+    }
+
+    return res.json({ success: true, message: "Respondent updated successfully." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.deleteRespondent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await deleteUserByRoleAndId("RESPONDENT", id);
+
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: "Respondent not found." });
+    }
+
+    return res.json({ success: true, message: "Respondent deleted successfully." });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.getAllDrafts = async (req, res) => {
+  
+  try {
+    const [rows] = await db.query(`
+      SELECT
+          d.id,
+          d.respondent_id,
+          CONCAT(r.firstname, ' ', r.lastname) AS respondent_name,
+          r.mobile,
+          r.email,
+          d.answered_count,
+          d.assessment_type,
+          d.created_at,
+          d.updated_at
+      FROM assessment_drafts d
+      INNER JOIN respondent r
+          ON d.respondent_id = r.id
+      ORDER BY d.updated_at DESC
+    `);
+
+    res.json({
+      success: true,
+      drafts: rows,
+      count: rows.length,
+    });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+       message: err.message,
+      code: err.code,
+    });
+  }
+};
+

@@ -3,6 +3,7 @@ const DEFAULT_SCRIPT_URL =
 const UPSTREAM_TIMEOUT_MS = Number(process.env.GOOGLE_SCRIPT_TIMEOUT_MS || 30000);
 const UPSTREAM_RETRY_COUNT = Number(process.env.GOOGLE_SCRIPT_RETRY_COUNT || 1);
 const db = require("../config/db");
+const ASSESSMENT_TYPE = "leadership_reset";
 
 const ROW_TO_QKEY = {
   6: "q1",
@@ -111,6 +112,94 @@ function normalizeDraftPayload(input) {
   };
 }
 
+function normalizeSubmissionPayload(input) {
+  return {
+    respondent: String(input.respondent || "Anonymous").trim() || "Anonymous",
+    mobile: String(input.mobile || "").trim(),
+    submittedAt: input.submittedAt || new Date().toISOString(),
+    totalScore: Number(input.totalScore || 0),
+    totalWeightedScore: Number(input.totalWeightedScore || 0),
+    answersByRow: { ...(input.answersByRow || {}) },
+    questionResponses: Array.isArray(input.questionResponses) ? input.questionResponses : [],
+  };
+}
+
+async function ensureSubmissionsTable() {
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS assessment_submissions (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      respondent_id BIGINT UNSIGNED NOT NULL,
+      assessment_type VARCHAR(80) NOT NULL,
+      respondent_name VARCHAR(255) NULL,
+      mobile VARCHAR(32) NULL,
+      submitted_at DATETIME NULL,
+      total_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      total_weighted_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      submission_payload LONGTEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_submission_once (respondent_id, assessment_type)
+    )`
+  );
+}
+
+async function getSubmissionRecordByRespondentId(respondentId) {
+  await ensureSubmissionsTable();
+
+  const [rows] = await db.execute(
+    `SELECT respondent_name, mobile, submitted_at, total_score, total_weighted_score, submission_payload
+     FROM assessment_submissions
+     WHERE respondent_id = ? AND assessment_type = ?
+     LIMIT 1`,
+    [respondentId, ASSESSMENT_TYPE]
+  );
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const row = rows[0];
+  let parsedPayload = null;
+
+  try {
+    parsedPayload = typeof row.submission_payload === "string"
+      ? JSON.parse(row.submission_payload)
+      : row.submission_payload;
+  } catch {
+    parsedPayload = null;
+  }
+
+  return {
+    respondent: String(parsedPayload?.respondent || row.respondent_name || "").trim(),
+    mobile: String(parsedPayload?.mobile || row.mobile || "").trim(),
+    submittedAt: parsedPayload?.submittedAt || row.submitted_at || null,
+    totalScore: Number(parsedPayload?.totalScore ?? row.total_score ?? 0),
+    totalWeightedScore: Number(parsedPayload?.totalWeightedScore ?? row.total_weighted_score ?? 0),
+    questionResponses: Array.isArray(parsedPayload?.questionResponses) ? parsedPayload.questionResponses : [],
+    answersByRow: parsedPayload?.answersByRow || {},
+  };
+}
+
+async function saveSubmissionRecord(respondentId, payload) {
+  await ensureSubmissionsTable();
+
+  await db.execute(
+    `INSERT INTO assessment_submissions
+      (respondent_id, assessment_type, respondent_name, mobile, submitted_at, total_score, total_weighted_score, submission_payload)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      respondentId,
+      ASSESSMENT_TYPE,
+      payload.respondent,
+      payload.mobile,
+      payload.submittedAt,
+      payload.totalScore,
+      payload.totalWeightedScore,
+      JSON.stringify(payload),
+    ]
+  );
+}
+
 exports.saveDraft = async (req, res) => {
   try {
     const payload = normalizeDraftPayload(req.body || {});
@@ -217,8 +306,20 @@ exports.deleteDraft = async (req, res) => {
 
 exports.submitAssessment = async (req, res) => {
   try {
+    const existingSubmission = await getSubmissionRecordByRespondentId(req.user.id);
+
+    if (existingSubmission) {
+      return res.status(409).json({
+        success: false,
+        alreadySubmitted: true,
+        message: "Assessment already submitted. You can only submit once.",
+        data: existingSubmission,
+      });
+    }
+
     const scriptUrl = process.env.GOOGLE_SCRIPT_URL || DEFAULT_SCRIPT_URL;
-    const outgoingPayload = buildScriptPayload(req.body || {});
+    const normalizedPayload = normalizeSubmissionPayload(req.body || {});
+    const outgoingPayload = buildScriptPayload(normalizedPayload);
 
     const upstream = await fetchWithTimeoutAndRetry(scriptUrl, {
       method: "POST",
@@ -231,6 +332,18 @@ exports.submitAssessment = async (req, res) => {
     const rawText = await upstream.text();
     const parsed = parseTextResult(rawText);
 
+    const normalizedText = String(parsed.text || "").trim().toLowerCase();
+    const acceptedByUpstream =
+      parsed?.json?.success === true ||
+      normalizedText === "success" ||
+      normalizedText.includes("saved") ||
+      normalizedText.includes("updated") ||
+      normalizedText.includes("success");
+
+    if (acceptedByUpstream) {
+      await saveSubmissionRecord(req.user.id, normalizedPayload);
+    }
+
     // Return text so existing frontend text-based success check keeps working.
     if (parsed.text) {
       return res.status(200).send(parsed.text);
@@ -242,6 +355,29 @@ exports.submitAssessment = async (req, res) => {
     return res.status(502).json({
       success: false,
       message: "Failed to submit data to Google Sheet endpoint",
+      details: error.message,
+    });
+  }
+};
+
+exports.getSubmissionStatus = async (req, res) => {
+  try {
+    const submission = await getSubmissionRecordByRespondentId(req.user.id);
+
+    if (!submission) {
+      return res.json({ success: true, submitted: false });
+    }
+
+    return res.json({
+      success: true,
+      submitted: true,
+      data: submission,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch submission status",
       details: error.message,
     });
   }
