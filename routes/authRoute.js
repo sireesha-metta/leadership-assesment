@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require("../config/db");
 const authMiddleware = require("../middleware/authMiddleware");
 const allowRoles = require("../middleware/roleMiddleware");
-const {login,register,createAdmin,getAdmins,updateAdmin,deleteAdmin,getRespondents,updateRespondent,deleteRespondent,me,
+const {login,register,createAdmin,createRespondent,getAdmins,updateAdmin,deleteAdmin,getRespondents,updateRespondent,deleteRespondent,me,
   updateProfile,logout,changePassword,forgotPassword,getAllDrafts,} = require("../controllers/authController");  
 const Uploaded_file = require("../middleware/uploads");
 
@@ -109,6 +109,7 @@ router.get("/admins", authMiddleware, allowRoles("ADMIN"), getAdmins);
 router.put("/admins/:id", authMiddleware, allowRoles("ADMIN"), updateAdmin);
 router.delete("/admins/:id", authMiddleware, allowRoles("ADMIN"), deleteAdmin);
 
+router.post("/respondents", authMiddleware, allowRoles("ADMIN"), createRespondent);
 router.get("/respondents", authMiddleware, allowRoles("ADMIN"), getRespondents);
 router.put("/respondents/:id", authMiddleware, allowRoles("ADMIN"), updateRespondent);
 router.delete("/respondents/:id", authMiddleware, allowRoles("ADMIN"), deleteRespondent);
