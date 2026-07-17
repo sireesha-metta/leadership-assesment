@@ -75,7 +75,9 @@ async function sendViaGraph(to, subject, html) {
 function renderAssessmentHtml(payload) {
   const totalScore = Number(payload.totalScore || 0);
   const totalWeightedScore = Number(payload.totalWeightedScore || 0);
-  const submittedAt = payload.submittedAt || new Date().toISOString();
+  // const submittedAt = payload.submittedAt || new Date().toISOString();
+  const submittedAt = payload.submittedAt ? payload.submittedAt.replace("T", " ").split(".")[0]
+  : new Date().toISOString().replace("T", " ").split(".")[0];
   const first = String(payload?.firstName || payload?.first || '').trim();
   const last = String(payload?.lastName || payload?.last || '').trim();
   const name = [first, last].filter(Boolean).join(' ');
@@ -95,14 +97,14 @@ function renderAssessmentHtml(payload) {
 
   return `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222">
-    <h2>Hi ${name},</h2>
-      <h2 style="color:#1f2937">Your Leadership Assessment Results</h2>
-      <p>Submitted: ${submittedAt}</p>
+      <h4>Hi ${name},</h4>
+      <h4 style="color:#1f2937">Your Leadership Assessment Results</h4>
       <p><strong>Total score:</strong> ${totalScore}</p>
-      <p><strong>Total weighted score:</strong> ${totalWeightedScore}</p>
+      <p><strong>Total weighted score:</strong> ${totalWeightedScore}/100</p>
+      <p>Submitted: ${submittedAt}</p>
       ${rowsHtml ? `<table style="border-collapse:collapse;margin-top:10px;width:100%"><thead><tr><th style="padding:6px;border:1px solid #ddd;text-align:left">Question</th><th style="padding:6px;border:1px solid #ddd;text-align:left">Answer</th><th style="padding:6px;border:1px solid #ddd;text-align:right">Score</th><th style="padding:6px;border:1px solid #ddd;text-align:right">Weight</th></tr></thead><tbody>${rowsHtml}</tbody></table>` : ''}
     </div>
-    <h2>Thanks & Regards,</h2>
+    <h4>Thanks & Regards,</h4>
     <h4>Leadership Assessment Team</h4>
   `;
 
