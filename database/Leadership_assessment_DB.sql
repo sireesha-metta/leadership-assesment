@@ -47,17 +47,19 @@ DROP TABLE IF EXISTS `assessment_submissions`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `assessment_submissions` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `respondent_id` bigint unsigned NOT NULL,
+  `respondent_id` bigint unsigned DEFAULT NULL,
   `assessment_type` varchar(80) COLLATE utf8mb4_0900_ai_ci NOT NULL,
   `respondent_name` varchar(255) COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
-  `mobile` varchar(32) COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
+  `email` varchar(255) COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `submitted_at` datetime DEFAULT NULL,
   `total_score` decimal(12,2) NOT NULL DEFAULT '0',
   `total_weighted_score` decimal(12,2) NOT NULL DEFAULT '0',
   `submission_payload` longtext COLLATE utf8mb4_0900_ai_ci DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`) /*T![clustered_index] CLUSTERED */,
-  UNIQUE KEY `uq_submission_once` (`respondent_id`,`assessment_type`)
+  UNIQUE KEY `uq_submission_once` (`respondent_id`,`assessment_type`),
+  KEY `idx_submission_email` (`email`),
+  KEY `idx_submission_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci AUTO_INCREMENT=120001;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

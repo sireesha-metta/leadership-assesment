@@ -29,6 +29,78 @@ function normalizeStatus(status) {
   return String(status || "").trim().toLowerCase() === "inactive" ? "Inactive" : "Active";
 }
 
+async function ensureAssessmentSubmissionTable() {
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS assessment_submissions (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      respondent_id BIGINT UNSIGNED NULL,
+      assessment_type VARCHAR(80) NOT NULL,
+      respondent_name VARCHAR(255) NULL,
+      email VARCHAR(255) NULL,
+      submitted_at DATETIME NULL,
+      total_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      total_weighted_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      submission_payload LONGTEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_submission_once (respondent_id, assessment_type),
+      KEY idx_submission_email (email),
+      KEY idx_submission_created_at (created_at)
+    )`
+  );
+
+  const [emailColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'email'`);
+  if (emailColumns.length === 0) {
+    await db.execute(`ALTER TABLE assessment_submissions ADD COLUMN email VARCHAR(255) NULL`);
+  }
+
+  const [mobileColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'mobile'`);
+  if (mobileColumns.length > 0) {
+    await db.execute(`ALTER TABLE assessment_submissions DROP COLUMN mobile`);
+  }
+
+  const [respondentIdColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'respondent_id'`);
+  if (respondentIdColumns.length > 0 && respondentIdColumns[0].Null === 'NO') {
+    await db.execute(`ALTER TABLE assessment_submissions MODIFY respondent_id BIGINT UNSIGNED NULL`);
+  }
+}
+
+async function hasAssessmentSubmissionForIdentity({ respondentId, email }) {
+  const normalizedRespondentId = Number(respondentId);
+
+  if (Number.isFinite(normalizedRespondentId) && normalizedRespondentId > 0) {
+    await ensureAssessmentSubmissionTable();
+
+    const [submissionRows] = await db.execute(
+      `SELECT 1 FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? LIMIT 1`,
+      [normalizedRespondentId, "leadership_reset"]
+    );
+
+    if (submissionRows.length > 0) {
+      return true;
+    }
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail) {
+    return false;
+  }
+
+  await ensureAssessmentSubmissionTable();
+
+  const [rows] = await db.execute(
+    `SELECT 1 FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? LIMIT 1`,
+    ["leadership_reset", normalizedEmail]
+  );
+
+  return rows.length > 0;
+}
+
+function buildAssessmentTempPassword() {
+  return `TmpA${Date.now()}z9`;
+}
+
 async function listUsersByRole(role) {
   const [rows] = await db.execute(
     `SELECT id, firstname, lastname, mobile, email, status, created_at, updated_at
@@ -192,6 +264,123 @@ exports.register = async (req, res) => {
     );
 
     return res.status(201).json({ success: true, message: "Registration successful", id: result.insertId });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+exports.upsertAssessmentRespondent = async (req, res) => {
+  try {
+    const { firstName, lastName, mobile, email } = req.body || {};
+
+    const normalizedFirstName = String(firstName || "").trim();
+    const normalizedLastName = String(lastName || "").trim();
+    const normalizedEmail = normalizeEmail(email);
+    const normalizedMobile = normalizeMobileDigits(mobile);
+
+    if (!normalizedFirstName || !normalizedLastName || !normalizedEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "First name, last name and email are required.",
+      });
+    }
+
+    if (!/^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(normalizedEmail)) {
+      return res.status(400).json({ success: false, message: "Enter a valid email address." });
+    }
+
+    if (normalizedMobile && !/^[6-9]\d{9}$/.test(normalizedMobile)) {
+      return res.status(400).json({ success: false, message: "Enter a valid 10-digit mobile number." });
+    }
+
+    const [existingByEmail] = await db.execute(
+      "SELECT id, role, firstname, lastname, mobile, status FROM Respondent WHERE LOWER(TRIM(email)) = ? LIMIT 1",
+      [normalizedEmail]
+    );
+
+    const alreadyCompleted = await hasAssessmentSubmissionForIdentity({
+      respondentId: existingByEmail?.[0]?.id || null,
+      email: normalizedEmail,
+    });
+
+    if (alreadyCompleted) {
+      return res.status(409).json({
+        success: false,
+        alreadySubmitted: true,
+        message: "Assessment already submitted. Assignment already done.",
+      });
+    }
+
+    if (existingByEmail.length > 0) {
+      const existing = existingByEmail[0];
+
+      const existingFirstName = String(existing.firstname || "").trim();
+      const existingLastName = String(existing.lastname || "").trim();
+      const existingMobile = normalizeMobileDigits(existing.mobile);
+      const existingStatus = normalizeStatus(existing.status);
+
+      const isSameRecord =
+        existingFirstName === normalizedFirstName &&
+        existingLastName === normalizedLastName &&
+        existingMobile === normalizedMobile &&
+        existingStatus === "Active";
+
+      if (isSameRecord) {
+        return res.json({
+          success: true,
+          message: "Respondent already up to date.",
+          data: {
+            id: Number(existing.id),
+            firstname: existingFirstName,
+            lastname: existingLastName,
+            email: normalizedEmail,
+            mobile: existingMobile,
+            role: normalizeRole(existing.role),
+          },
+        });
+      }
+
+      await db.execute(
+        `UPDATE Respondent
+         SET firstname = ?, lastname = ?, mobile = ?, status = 'Active'
+         WHERE id = ?`,
+        [normalizedFirstName, normalizedLastName, normalizedMobile, Number(existing.id)]
+      );
+
+      return res.json({
+        success: true,
+        message: "Respondent details saved.",
+        data: {
+          id: Number(existing.id),
+          firstname: normalizedFirstName,
+          lastname: normalizedLastName,
+          email: normalizedEmail,
+          mobile: normalizedMobile,
+          role: normalizeRole(existing.role),
+        },
+      });
+    }
+
+    const generatedPassword = buildAssessmentTempPassword();
+
+    const [insertResult] = await db.execute(
+      "INSERT INTO Respondent (firstname, lastname, mobile, email, password, role, status) VALUES (?, ?, ?, ?, ?, 'RESPONDENT', 'Active')",
+      [normalizedFirstName, normalizedLastName, normalizedMobile, normalizedEmail, generatedPassword]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: "Respondent created and saved.",
+      data: {
+        id: insertResult.insertId,
+        firstname: normalizedFirstName,
+        lastname: normalizedLastName,
+        email: normalizedEmail,
+        mobile: normalizedMobile,
+        role: "RESPONDENT",
+      },
+    });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ success: false, message: "Server error" });

@@ -1,9 +1,9 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../config/db");
-const authMiddleware = require("../middleware/authMiddleware");
+const { authMiddleware } = require("../middleware/authMiddleware");
 const allowRoles = require("../middleware/roleMiddleware");
-const {login,register,createAdmin,createRespondent,getAdmins,updateAdmin,deleteAdmin,getRespondents,updateRespondent,deleteRespondent,me,
+const {login,register,upsertAssessmentRespondent,createAdmin,createRespondent,getAdmins,updateAdmin,deleteAdmin,getRespondents,updateRespondent,deleteRespondent,me,
   updateProfile,logout,changePassword,forgotPassword,getAllDrafts,} = require("../controllers/authController");  
 const Uploaded_file = require("../middleware/uploads");
 
@@ -104,6 +104,9 @@ router.post("/upload", authMiddleware, Uploaded_file.single("file"), async (req,
 
 router.post("/login", login);
 router.post("/register", register);
+
+router.post("/assessment-respondent", upsertAssessmentRespondent);
+
 router.post("/admins", authMiddleware, allowRoles("ADMIN"), createAdmin);
 router.get("/admins", authMiddleware, allowRoles("ADMIN"), getAdmins);
 router.put("/admins/:id", authMiddleware, allowRoles("ADMIN"), updateAdmin);
@@ -115,10 +118,11 @@ router.put("/respondents/:id", authMiddleware, allowRoles("ADMIN"), updateRespon
 router.delete("/respondents/:id", authMiddleware, allowRoles("ADMIN"), deleteRespondent);
 
 router.post("/forgot-password", forgotPassword);
+router.post("/change-password", authMiddleware, changePassword);
+
 router.post("/logout", authMiddleware, logout);
 router.get("/me", authMiddleware, me);
 router.put("/profile", authMiddleware, updateProfile);
-router.post("/change-password", authMiddleware, changePassword);
 
 router.get("/drafts", authMiddleware, allowRoles("ADMIN"), getAllDrafts);
 
