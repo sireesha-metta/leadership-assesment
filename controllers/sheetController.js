@@ -29,7 +29,6 @@ function buildScriptPayload(input) {
     firstName: String(input.firstName || "").trim(),
     lastName: String(input.lastName || "").trim(),
     email: String(input.email || "").trim(),
-
     respondentId: Number(input.respondentId || 0),
     submittedAt: input.submittedAt || new Date().toISOString(),
     mode: "template-update",
@@ -37,9 +36,7 @@ function buildScriptPayload(input) {
     totalWeightedScore: Number(input.totalWeightedScore || 0),
     answersByRow: { ...(input.answersByRow || {}) },
     answersByQuestion: {},
-    questionResponses: Array.isArray(input.questionResponses)
-      ? input.questionResponses
-      : [],
+    questionResponses: Array.isArray(input.questionResponses) ? input.questionResponses : [],
   };
 
   QUESTION_ROWS.forEach((rowIdx) => {
@@ -487,6 +484,30 @@ exports.getPublicDraft = async (req, res) => {
   }
 };
 
+exports.deletePublicDraft = async (req, res) => {
+  try {
+    const { respondentId } = req.params;
+
+    const [result] = await db.execute(
+      `DELETE FROM assessment_drafts
+       WHERE respondent_id = ? AND assessment_type = ?`,
+      [respondentId, "leadership_reset"]
+    );
+
+    return res.json({
+      success: true,
+      message: result.affectedRows > 0 ? "Draft cleared." : "No draft found to clear.",
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to clear draft",
+      details: error.message,
+    });
+  }
+};
+
 exports.deleteDraft = async (req, res) => {
   try {
     const [result] = await db.execute(
@@ -560,7 +581,7 @@ exports.submitAssessment = async (req, res) => {
 
     let dbSaved = false;
     try {
-      await saveSubmissionRecord(req.user?.id || 0, normalizedPayload);
+      await saveSubmissionRecord(normalizedPayload.respondentId, normalizedPayload);
       dbSaved = true;
     } catch (dbError) {
       console.error('Failed to save assessment submission to database:', dbError.message || dbError);

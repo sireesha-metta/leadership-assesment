@@ -24,6 +24,7 @@ dist-ssr
 *.sw?
 package-lock.json
 uploaded_file/*.xlsx
+
 .env
 
 
