@@ -44,6 +44,7 @@ app.use(express.json());
 const authRoutes = require("./routes/authRoute");
 const questionRoutes = require("./routes/questionRoute");
 const sheetRoutes = require("./routes/sheetRoute");
+const { startDraftReminderJob } = require("./jobs/draftReminderJob");
 
 app.use("/api/auth", authRoutes);
 app.use("/api/questions", questionRoutes);
@@ -56,4 +57,5 @@ app.get("/", (_req, res) => {
 const PORT = Number(process.env.PORT || 5000);
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  startDraftReminderJob();
 });

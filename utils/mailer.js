@@ -117,4 +117,25 @@ async function sendAssessmentResultEmail(to, payload) {
   return await sendViaGraph(to, subject, html);
 }
 
-module.exports = { sendAssessmentResultEmail };
+function renderDraftReminderHtml(payload) {
+  const first = String(payload?.firstName || "").trim();
+  const name = first || String(payload?.respondentName || "").trim() || "there";
+
+  return `
+    <div style="font-family:Arial,Helvetica,sans-serif;color:#222;line-height:1.5">
+      <p>Hi ${name},</p>
+      <p>You did not complete your Leadership Assessment yet.</p>
+      <p>Please complete that in next 8 hours for better result.</p>
+      <p style="margin-top:24px">Thanks & Regards,<br/>Leadership Assessment Team</p>
+    </div>
+  `;
+}
+
+async function sendDraftReminderEmail(to, payload) {
+  if (!to) return false;
+  const subject = "Reminder: Complete your Leadership Assessment";
+  const html = renderDraftReminderHtml(payload || {});
+  return await sendViaGraph(to, subject, html);
+}
+
+module.exports = { sendAssessmentResultEmail, sendDraftReminderEmail };

@@ -5,6 +5,7 @@ const { authMiddleware } = require("../middleware/authMiddleware");
 const allowRoles = require("../middleware/roleMiddleware");
 const {login,register,upsertAssessmentRespondent,createAdmin,createRespondent,getAdmins,updateAdmin,deleteAdmin,getRespondents,updateRespondent,deleteRespondent,me,
   updateProfile,logout,changePassword,forgotPassword,getAllDrafts,} = require("../controllers/authController");  
+const { runDraftReminderCycle } = require("../jobs/draftReminderJob");
 const Uploaded_file = require("../middleware/uploads");
 
 async function getTableColumns(tableName) {
@@ -125,6 +126,40 @@ router.get("/me", authMiddleware, me);
 router.put("/profile", authMiddleware, updateProfile);
 
 router.get("/drafts", authMiddleware, allowRoles("ADMIN"), getAllDrafts);
+
+router.post("/drafts/reminder/run", authMiddleware, allowRoles("ADMIN"), async (_req, res) => {
+  try {
+    const summary = await runDraftReminderCycle({ force: true });
+
+    if (summary?.skipped) {
+      return res.status(202).json({
+        success: false,
+        skipped: true,
+        message: summary.reason || "Reminder cycle skipped.",
+        data: summary,
+      });
+    }
+
+    if (!summary?.success) {
+      return res.status(500).json({
+        success: false,
+        message: summary?.reason || "Failed to run reminder cycle.",
+        data: summary,
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: `Reminder cycle completed. Sent ${summary.sent} of ${summary.processed}.`,
+      data: summary,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to run reminder cycle.",
+    });
+  }
+});
 
 
 
