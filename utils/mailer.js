@@ -76,8 +76,7 @@ function renderAssessmentHtml(payload) {
   const totalScore = Number(payload.totalScore || 0);
   const totalWeightedScore = Number(payload.totalWeightedScore || 0);
   // const submittedAt = payload.submittedAt || new Date().toISOString();
-  const submittedAt = payload.submittedAt ? payload.submittedAt.replace("T", " ").split(".")[0]
-  : new Date().toISOString().replace("T", " ").split(".")[0];
+  const submittedAt = payload.submittedAt ? payload.submittedAt.split("T")[0]: new Date().toISOString().split("T")[0];
   const first = String(payload?.firstName || payload?.first || '').trim();
   const last = String(payload?.lastName || payload?.last || '').trim();
   const name = [first, last].filter(Boolean).join(' ');

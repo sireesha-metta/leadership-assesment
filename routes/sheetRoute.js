@@ -8,9 +8,9 @@ router.get("/public-draft/:respondentId", getPublicDraft);
 router.delete("/public-draft/:respondentId", deletePublicDraft);
 
 
-router.post("/draft", require("../middleware/authMiddleware").authMiddleware, saveDraft);
-router.get("/draft", require("../middleware/authMiddleware").authMiddleware, getDraft);
-router.delete("/draft", require("../middleware/authMiddleware").authMiddleware, deleteDraft);
+// router.post("/draft", require("../middleware/authMiddleware").authMiddleware, saveDraft);
+// router.get("/draft", require("../middleware/authMiddleware").authMiddleware, getDraft);
+// router.delete("/draft", require("../middleware/authMiddleware").authMiddleware, deleteDraft);
 
 router.post("/submit", optionalAuth, submitAssessment);
 router.get("/submission-status", require("../middleware/authMiddleware").authMiddleware, getSubmissionStatus);

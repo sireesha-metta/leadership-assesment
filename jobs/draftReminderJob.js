@@ -187,6 +187,18 @@ async function runDraftReminderCycle(options = {}) {
       sent: sentCount,
       failed: failedCount,
     };
+
+    currentStep = "delete expired drafts";
+    await deleteExpiredDrafts();
+
+    return {
+      success: true,
+      skipped: false,
+      processed: pendingRows.length,
+      sent: sentCount,
+      failed: failedCount,
+    };
+
   } catch (error) {
     console.error(`Draft reminder cycle failed at step: ${currentStep}`, error);
     return {
@@ -200,6 +212,8 @@ async function runDraftReminderCycle(options = {}) {
   } finally {
     draftReminderRunInProgress = false;
   }
+
+
 }
 
 function startDraftReminderJob() {
@@ -217,6 +231,16 @@ function startDraftReminderJob() {
   setInterval(runDraftReminderCycle, intervalMs);
 
   console.log(`Draft reminder job started. Interval: ${intervalMinutes} minute(s).`);
+}
+
+
+async function deleteExpiredDrafts() {
+  const [result] = await db.execute(
+    `DELETE FROM assessment_drafts
+     WHERE updated_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)`
+  );
+
+  console.log(`Deleted ${result.affectedRows} expired draft(s).`);
 }
 
 module.exports = {
