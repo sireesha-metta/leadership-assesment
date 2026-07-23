@@ -97,7 +97,8 @@ function renderAssessmentHtml(payload) {
   return `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222">
       <h4>Hi ${name},</h4>
-      <h4 style="color:#1f2937">Your Leadership Assessment Results</h4>
+      <h4 style="color:#1f2937">Your Leadership Assessment Results - Lean In Coaching.
+</h4>
       <p><strong>Total score:</strong> ${totalScore}</p>
       <p><strong>Total weighted score:</strong> ${totalWeightedScore}/100</p>
       <p>Submitted: ${submittedAt}</p>
@@ -111,7 +112,8 @@ function renderAssessmentHtml(payload) {
 
 async function sendAssessmentResultEmail(to, payload) {
   if (!to) return false;  
-  const subject = `Reg:Your Leadership Assessment Results` ;
+  const subject = `Reg:Your Leadership Assessment Results - Lean In Coaching.
+` ;
   const html = renderAssessmentHtml(payload);
   return await sendViaGraph(to, subject, html);
 }
