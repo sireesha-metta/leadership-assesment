@@ -1,5 +1,6 @@
 const db = require("../config/db");
 const { sendDraftReminderEmail } = require("../utils/mailer");
+const { ensureRespondentSecuritySchema, toDecryptedRespondent } = require("../utils/dataSecurity");
 
 const ASSESSMENT_TYPE = "leadership_reset";
 let draftReminderRunInProgress = false;
@@ -31,6 +32,8 @@ async function fetchPendingDraftReminders(afterHours, batchSize, maxAttempts) {
   const safeBatchSize = toPositiveInt(batchSize, 100);
   const safeMaxAttempts = toPositiveInt(maxAttempts, 1);
 
+  await ensureRespondentSecuritySchema(db);
+
   const [rows] = await db.execute(
     `SELECT
       d.id,
@@ -46,15 +49,10 @@ async function fetchPendingDraftReminders(afterHours, batchSize, maxAttempts) {
      INNER JOIN respondent r ON r.id = d.respondent_id
      LEFT JOIN assessment_submissions s
        ON s.assessment_type = d.assessment_type
-      AND (
-        (s.respondent_id IS NOT NULL AND s.respondent_id = d.respondent_id)
-        OR (s.respondent_id IS NULL AND LOWER(TRIM(s.email)) = LOWER(TRIM(r.email)))
-      )
+      AND s.respondent_id = d.respondent_id
      WHERE d.assessment_type = ?
        AND d.answered_count > 0
        AND s.id IS NULL
-       AND r.email IS NOT NULL
-       AND TRIM(r.email) <> ''
        AND d.updated_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? HOUR)
        AND IFNULL(d.reminder_attempts, 0) < ?
        AND (d.reminder_sent_at IS NULL OR d.reminder_sent_at < d.updated_at)
@@ -63,7 +61,17 @@ async function fetchPendingDraftReminders(afterHours, batchSize, maxAttempts) {
     [ASSESSMENT_TYPE, safeAfterHours, safeMaxAttempts]
   );
 
-  return rows;
+  return rows
+    .map((row) => {
+      const pii = toDecryptedRespondent(row);
+      return {
+        ...row,
+        firstname: String(pii.firstname || "").trim(),
+        lastname: String(pii.lastname || "").trim(),
+        email: String(pii.email || "").trim().toLowerCase(),
+      };
+    })
+    .filter((row) => row.email);
 }
 
 function parseDraftPayload(rawPayload) {

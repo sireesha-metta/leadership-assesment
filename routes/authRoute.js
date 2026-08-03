@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require("../config/db");
 const { authMiddleware } = require("../middleware/authMiddleware");
 const allowRoles = require("../middleware/roleMiddleware");
+const { ensureRespondentSecuritySchema, toDecryptedRespondent } = require("../utils/dataSecurity");
 const {login,register,upsertAssessmentRespondent,createAdmin,createRespondent,getAdmins,updateAdmin,deleteAdmin,getRespondents,updateRespondent,deleteRespondent,me,
   updateProfile,logout,changePassword,forgotPassword,getAllDrafts,} = require("../controllers/authController");  
 const { runDraftReminderCycle } = require("../jobs/draftReminderJob");
@@ -25,6 +26,8 @@ async function resolveUploaderName(user) {
   if (!user?.id) return user?.email || null;
 
   try {
+    await ensureRespondentSecuritySchema(db);
+
     const [rows] = await db.execute(
       "SELECT firstname, lastname, email FROM Respondent WHERE id = ? LIMIT 1",
       [user.id]
@@ -32,11 +35,12 @@ async function resolveUploaderName(user) {
 
     if (!rows.length) return user?.email || null;
 
-    const firstName = String(rows[0].firstname || "").trim();
-    const lastName = String(rows[0].lastname || "").trim();
+    const pii = toDecryptedRespondent(rows[0]);
+    const firstName = String(pii.firstname || "").trim();
+    const lastName = String(pii.lastname || "").trim();
     const fullName = `${firstName} ${lastName}`.trim();
 
-    return fullName || String(rows[0].email || user?.email || "").trim() || null;
+    return fullName || String(pii.email || user?.email || "").trim() || null;
   } catch {
     return user?.email || null;
   }
@@ -169,8 +173,23 @@ router.get("/test", (req, res) => {
 
 router.get("/users", authMiddleware, allowRoles("ADMIN"), async (req, res) => {
   try {
+    await ensureRespondentSecuritySchema(db);
+
     const [results] = await db.execute("SELECT id, firstname, lastname, email, role, mobile, status FROM Respondent");
-    res.json(results);
+    const users = results.map((row) => {
+      const pii = toDecryptedRespondent(row);
+      return {
+        id: row.id,
+        firstname: pii.firstname,
+        lastname: pii.lastname,
+        email: String(pii.email || "").trim().toLowerCase(),
+        role: row.role,
+        mobile: pii.mobile,
+        status: row.status,
+      };
+    });
+
+    res.json(users);
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Server error" });

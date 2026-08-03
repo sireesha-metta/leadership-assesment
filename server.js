@@ -1,7 +1,6 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-
 dotenv.config();
 
 const app = express();
@@ -44,11 +43,13 @@ app.use(express.json());
 const authRoutes = require("./routes/authRoute");
 const questionRoutes = require("./routes/questionRoute");
 const sheetRoutes = require("./routes/sheetRoute");
+const adminRoutes = require("./routes/adminRoutes");
 const { startDraftReminderJob } = require("./jobs/draftReminderJob");
 
 app.use("/api/auth", authRoutes);
 app.use("/api/questions", questionRoutes);
 app.use("/api", sheetRoutes);
+app.use("/api/admin", adminRoutes);
 
 app.get("/", (_req, res) => {
   res.send("Leadership Assessment API Running");

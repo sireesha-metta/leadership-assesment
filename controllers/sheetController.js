@@ -3,7 +3,7 @@ const DEFAULT_SCRIPT_URL =
 const UPSTREAM_TIMEOUT_MS = Number(process.env.GOOGLE_SCRIPT_TIMEOUT_MS || 30000);
 const UPSTREAM_RETRY_COUNT = Number(process.env.GOOGLE_SCRIPT_RETRY_COUNT || 1);
 const db = require("../config/db");
-const { sendAssessmentResultEmail } = require("../utils/mailer");
+const { sendAssessmentResultEmail, sendAdminNotificationEmail } = require("../utils/mailer");
 const ASSESSMENT_TYPE = "leadership_reset";
 
 const ROW_TO_QKEY = {
@@ -595,21 +595,42 @@ exports.submitAssessment = async (req, res) => {
     }
 
     let mailSent = false;
+    let adminMailSent = false;
 
     try {
       const recipient = normalizedPayload.email;
       if (recipient) {
         mailSent = await sendAssessmentResultEmail(recipient, {
+          respondent: normalizedPayload.respondent,
           firstName: normalizedPayload.firstName,
           lastName: normalizedPayload.lastName,
+          email: normalizedPayload.email,
           totalScore: normalizedPayload.totalScore,
           totalWeightedScore: normalizedPayload.totalWeightedScore,
           submittedAt: normalizedPayload.submittedAt,
+          answersByRow: normalizedPayload.answersByRow,
           questionResponses: normalizedPayload.questionResponses,
         });
       }
+      try {
+        adminMailSent =await sendAdminNotificationEmail({
+          respondent: normalizedPayload.respondent,
+          firstName: normalizedPayload.firstName,
+          lastName: normalizedPayload.lastName,
+          email: normalizedPayload.email,
+          totalScore: normalizedPayload.totalScore,
+          totalWeightedScore: normalizedPayload.totalWeightedScore,
+          submittedAt: normalizedPayload.submittedAt,
+          answersByRow: normalizedPayload.answersByRow,
+          questionResponses: normalizedPayload.questionResponses,
+        });
+      } catch (err) {
+        console.error("Failed to send admin notification:", err.message);
+      }
+
     } catch (e) {
       mailSent = false;
+      adminMailSent = false;
       console.error("Failed to send assessment email:", e?.message);
     }
 

@@ -34,6 +34,19 @@ Node.js + Express + MongoDB backend for authentication and role-based access.
 3. Start API:
    npm run dev
 
+## Data Security Configuration
+
+Set these environment variables before running in production:
+
+- DATA_ENCRYPTION_KEY: secret used for AES-256-GCM encryption of first name, last name, email and mobile.
+- DATA_HASH_KEY: secret used to compute blind indexes for email/mobile lookups.
+
+Notes:
+
+- Passwords are stored using bcrypt hashes.
+- Respondent PII is encrypted at rest; lookup uses hashed index columns.
+- Keep DATA_ENCRYPTION_KEY and DATA_HASH_KEY stable across restarts. Rotating keys requires a controlled re-encryption migration.
+
 ## API Endpoints
 
 - POST /api/auth/register
