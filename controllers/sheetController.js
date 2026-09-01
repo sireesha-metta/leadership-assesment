@@ -145,6 +145,7 @@ function normalizeSubmissionPayload(input) {
     totalWeightedScore: Number(input.totalWeightedScore || 0),
     answersByRow: { ...(input.answersByRow || {}) },
     questionResponses: Array.isArray(input.questionResponses) ? input.questionResponses : [],
+    bookingDetails: input.bookingDetails || null,
   };
 }
 
@@ -547,6 +548,18 @@ exports.submitAssessment = async (req, res) => {
       });
     }
 
+    const { isSlotBookedOrBlocked } = require("../utils/slotService");
+    const booking = normalizedPayload.bookingDetails || {};
+    if (booking.scheduledDate && booking.scheduledTime) {
+      const isUnavailable = await isSlotBookedOrBlocked(booking.scheduledDate, booking.scheduledTime);
+      if (isUnavailable) {
+        return res.status(409).json({
+          success: false,
+          message: `The time slot ${booking.scheduledTime} on ${booking.scheduledDate} was just booked by another user or is unavailable. Please choose another time slot.`,
+        });
+      }
+    }
+
     const scriptUrl = process.env.GOOGLE_SCRIPT_URL || DEFAULT_SCRIPT_URL;
     const outgoingPayload = buildScriptPayload(normalizedPayload);
 
@@ -610,6 +623,7 @@ exports.submitAssessment = async (req, res) => {
           submittedAt: normalizedPayload.submittedAt,
           answersByRow: normalizedPayload.answersByRow,
           questionResponses: normalizedPayload.questionResponses,
+          bookingDetails: normalizedPayload.bookingDetails,
         });
       }
       try {
@@ -623,6 +637,7 @@ exports.submitAssessment = async (req, res) => {
           submittedAt: normalizedPayload.submittedAt,
           answersByRow: normalizedPayload.answersByRow,
           questionResponses: normalizedPayload.questionResponses,
+          bookingDetails: normalizedPayload.bookingDetails,
         });
       } catch (err) {
         console.error("Failed to send admin notification:", err.message);

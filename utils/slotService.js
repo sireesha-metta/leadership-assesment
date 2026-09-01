@@ -1,0 +1,176 @@
+const db = require("../config/db");
+
+const DEFAULT_SLOTS = [
+  { time: "09:00am", order: 1 },
+  { time: "09:30am", order: 2 },
+  { time: "10:00am", order: 3 },
+  { time: "10:30am", order: 4 },
+  { time: "11:00am", order: 5 },
+  { time: "11:30am", order: 6 },
+  { time: "12:00pm", order: 7 },
+  { time: "12:30pm", order: 8 },
+  { time: "02:00pm", order: 9 },
+  { time: "02:30pm", order: 10 },
+  { time: "03:00pm", order: 11 },
+  { time: "03:30pm", order: 12 },
+  { time: "04:00pm", order: 13 },
+  { time: "04:30pm", order: 14 },
+  { time: "06:00pm", order: 15 },
+  { time: "08:00pm", order: 16 }
+];
+
+function toIsoDate(str) {
+  if (!str) return "";
+  const d = new Date(str);
+  if (isNaN(d.getTime())) return String(str).trim();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+async function ensureSlotSchema() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS admin_slot_config (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      slot_time VARCHAR(20) NOT NULL UNIQUE,
+      is_active BOOLEAN DEFAULT true,
+      display_order INT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS admin_blocked_slots (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      block_date VARCHAR(50) NOT NULL,
+      slot_time VARCHAR(20) DEFAULT NULL,
+      reason VARCHAR(255) DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS admin_shift_config (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      shift_type VARCHAR(100) NOT NULL,
+      start_time VARCHAR(20) NOT NULL,
+      end_time VARCHAR(20) NOT NULL,
+      max_capacity INT DEFAULT 15,
+      call_duration_mins INT DEFAULT 20,
+      grace_period_mins INT DEFAULT 10,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  const [shiftRows] = await db.query("SELECT COUNT(*) as count FROM admin_shift_config");
+  if (shiftRows[0].count === 0) {
+    const defaultShifts = [
+      { shift_type: "Morning Shift (08:30 AM - 12:30 PM)", start_time: "09:00:00", end_time: "13:00:00", max_capacity: 15 },
+      { shift_type: "Afternoon Shift (02:00 PM - 05:00 PM)", start_time: "14:00:00", end_time: "17:00:00", max_capacity: 12 },
+      { shift_type: "Evening Shift (06:00 PM - 09:00 PM)", start_time: "18:00:00", end_time: "21:00:00", max_capacity: 8 }
+    ];
+    for (const s of defaultShifts) {
+      await db.query(
+        "INSERT INTO admin_shift_config (shift_type, start_time, end_time, max_capacity, call_duration_mins, grace_period_mins, is_active) VALUES (?, ?, ?, ?, 20, 10, true)",
+        [s.shift_type, s.start_time, s.end_time, s.max_capacity]
+      );
+    }
+  }
+
+  for (const slot of DEFAULT_SLOTS) {
+    await db.query(
+      "INSERT INTO admin_slot_config (slot_time, is_active, display_order) VALUES (?, true, ?) ON DUPLICATE KEY UPDATE display_order = VALUES(display_order)",
+      [slot.time, slot.order]
+    );
+  }
+}
+
+async function getAvailableAndBookedSlots(dateStr) {
+  await ensureSlotSchema();
+  const targetIsoDate = toIsoDate(dateStr);
+
+  const [configRows] = await db.query(
+    "SELECT slot_time, is_active FROM admin_slot_config ORDER BY display_order ASC, id ASC"
+  );
+  const allConfiguredSlots = configRows.map((r) => r.slot_time);
+  const activeSlots = configRows.filter((r) => Boolean(r.is_active)).map((r) => r.slot_time);
+  const disabledByAdmin = configRows.filter((r) => !r.is_active).map((r) => r.slot_time);
+
+  const [blockedRows] = await db.query(
+    "SELECT id, block_date, slot_time, reason FROM admin_blocked_slots"
+  );
+
+  const matchingBlocks = blockedRows.filter((r) => {
+    const rowIso = toIsoDate(r.block_date);
+    return r.block_date === "ALL" || rowIso === targetIsoDate || r.block_date === dateStr;
+  });
+
+  const isWholeDayBlocked = matchingBlocks.some((r) => r.slot_time === null || r.slot_time === "ALL");
+  if (isWholeDayBlocked) {
+    return {
+      slots: [],
+      allConfiguredSlots,
+      bookedSlots: [],
+      blockedSlots: allConfiguredSlots,
+      isDayBlocked: true,
+    };
+  }
+
+  const blockedTimeSlots = matchingBlocks.map((r) => r.slot_time).filter(Boolean);
+  const allBlockedSlots = Array.from(new Set([...blockedTimeSlots, ...disabledByAdmin]));
+
+  const [submissions] = await db.query(
+    "SELECT submission_payload FROM assessment_submissions"
+  );
+
+  const bookedTimeSlots = [];
+  submissions.forEach((row) => {
+    try {
+      let payload = row.submission_payload;
+      if (typeof payload === "string") {
+        payload = JSON.parse(payload);
+      }
+      const booking = payload?.bookingDetails || {};
+      const scheduledDate = booking.scheduledDate || payload?.scheduledDate;
+      const scheduledTime = booking.scheduledTime || payload?.scheduledTime;
+
+      if (scheduledDate && scheduledTime) {
+        const subIsoDate = toIsoDate(scheduledDate);
+        if (subIsoDate === targetIsoDate || scheduledDate === dateStr) {
+          bookedTimeSlots.push(scheduledTime);
+        }
+      }
+    } catch (e) {}
+  });
+
+  const availableSlots = activeSlots.filter(
+    (slot) => !blockedTimeSlots.includes(slot) && !bookedTimeSlots.includes(slot)
+  );
+
+  const [shifts] = await db.query(
+    "SELECT id, shift_type, start_time, end_time, max_capacity, call_duration_mins, grace_period_mins, is_active FROM admin_shift_config WHERE is_active = true ORDER BY id ASC"
+  );
+
+  return {
+    slots: availableSlots,
+    allConfiguredSlots,
+    bookedSlots: Array.from(new Set(bookedTimeSlots)),
+    blockedSlots: allBlockedSlots,
+    shifts,
+    isDayBlocked: false,
+  };
+}
+
+async function isSlotBookedOrBlocked(dateStr, timeStr) {
+  const info = await getAvailableAndBookedSlots(dateStr);
+  if (info.isDayBlocked) return true;
+  return info.bookedSlots.includes(timeStr) || info.blockedSlots.includes(timeStr);
+}
+
+module.exports = {
+  ensureSlotSchema,
+  getAvailableAndBookedSlots,
+  isSlotBookedOrBlocked,
+};

@@ -88,35 +88,73 @@ async function ensureAssessmentSubmissionTable() {
 }
 
 async function hasAssessmentSubmissionForIdentity({ respondentId, email }) {
+  await ensureAssessmentSubmissionTable();
+
+  const normalizedEmail = normalizeEmail(email);
   const normalizedRespondentId = Number(respondentId);
 
+  // 1. Check assessment_submissions table by respondent_id
   if (Number.isFinite(normalizedRespondentId) && normalizedRespondentId > 0) {
-    await ensureAssessmentSubmissionTable();
-
-    const [submissionRows] = await db.execute(
-      `SELECT 1 FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? LIMIT 1`,
+    const [rows] = await db.execute(
+      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? ORDER BY id DESC LIMIT 1`,
       [normalizedRespondentId, "leadership_reset"]
     );
-
-    if (submissionRows.length > 0) {
-      return true;
+    if (rows.length > 0) {
+      return {
+        submitted_at: rows[0].submitted_at || rows[0].created_at,
+        created_at: rows[0].created_at,
+      };
     }
   }
 
-  const normalizedEmail = normalizeEmail(email);
-
-  if (!normalizedEmail) {
-    return false;
+  // 2. Check assessment_submissions table by email
+  if (normalizedEmail) {
+    const [rows] = await db.execute(
+      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? ORDER BY id DESC LIMIT 1`,
+      ["leadership_reset", normalizedEmail]
+    );
+    if (rows.length > 0) {
+      return {
+        submitted_at: rows[0].submitted_at || rows[0].created_at,
+        created_at: rows[0].created_at,
+      };
+    }
   }
 
-  await ensureAssessmentSubmissionTable();
+  // 3. Fallback: Check assessment_drafts table by email
+  if (normalizedEmail) {
+    try {
+      const [draftRows] = await db.execute(
+        `SELECT id, saved_at, updated_at, created_at FROM assessment_drafts WHERE LOWER(TRIM(email)) = ? ORDER BY id DESC LIMIT 1`,
+        [normalizedEmail]
+      );
+      if (draftRows.length > 0) {
+        return {
+          submitted_at: draftRows[0].saved_at || draftRows[0].updated_at || draftRows[0].created_at,
+          created_at: draftRows[0].created_at,
+        };
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
 
-  const [rows] = await db.execute(
-    `SELECT 1 FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? LIMIT 1`,
-    ["leadership_reset", normalizedEmail]
-  );
+  // 4. Fallback: Check Respondent table by email
+  if (normalizedEmail) {
+    try {
+      const existingByEmail = await findRespondentByEmail(normalizedEmail);
+      if (existingByEmail) {
+        return {
+          submitted_at: existingByEmail.created_at || existingByEmail.updated_at || new Date().toISOString(),
+          created_at: existingByEmail.created_at,
+        };
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
 
-  return rows.length > 0;
+  return null;
 }
 
 function buildAssessmentTempPassword() {
@@ -495,10 +533,14 @@ exports.upsertAssessmentRespondent = async (req, res) => {
     });
 
     if (alreadyCompleted) {
+      const submittedAt = alreadyCompleted.submitted_at || alreadyCompleted.created_at || new Date().toISOString();
       return res.status(409).json({
         success: false,
         alreadySubmitted: true,
         message: "Assessment already submitted. Assignment already done.",
+        data: {
+          submittedAt,
+        },
       });
     }
 
