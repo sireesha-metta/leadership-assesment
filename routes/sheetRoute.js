@@ -3,6 +3,22 @@ const { optionalAuth } = require("../middleware/authMiddleware");
 const {	saveDraft,savePublicDraft,getDraft,getPublicDraft,deleteDraft,submitAssessment,	getSubmissionStatus,getSubmissions,	deleteSubmission,deletePublicDraft} = require("../controllers/sheetController");
 const router = express.Router();
 
+const { getAvailableAndBookedSlots } = require("../utils/slotService");
+
+router.get("/available-slots", async (req, res) => {
+  try {
+    const dateStr = req.query.date;
+    if (!dateStr) {
+      return res.status(400).json({ success: false, message: "date parameter is required" });
+    }
+    const result = await getAvailableAndBookedSlots(dateStr);
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error("Available slots error:", err);
+    return res.status(500).json({ success: false, message: "Failed to fetch slots" });
+  }
+});
+
 router.post("/public-draft", savePublicDraft);
 router.get("/public-draft/:respondentId", getPublicDraft);
 router.delete("/public-draft/:respondentId", deletePublicDraft);

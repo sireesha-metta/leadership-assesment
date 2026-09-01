@@ -91,3 +91,124 @@ exports.exportSubmissions = async (req, res) => {
     });
   }
 };
+
+exports.getSlotSettings = async (req, res) => {
+  try {
+    const { ensureSlotSchema } = require("../utils/slotService");
+    await ensureSlotSchema();
+
+    const [configs] = await pool.query(
+      "SELECT id, slot_time, is_active, display_order FROM admin_slot_config ORDER BY display_order ASC, id ASC"
+    );
+
+    const [blocks] = await pool.query(
+      "SELECT id, block_date, slot_time, reason, created_at FROM admin_blocked_slots ORDER BY id DESC"
+    );
+
+    const [shifts] = await pool.query(
+      "SELECT id, shift_type, start_time, end_time, max_capacity, call_duration_mins, grace_period_mins, is_active FROM admin_shift_config ORDER BY id ASC"
+    );
+
+    return res.json({
+      success: true,
+      configs,
+      blocks,
+      shifts,
+    });
+  } catch (err) {
+    console.error("Get slot settings error:", err);
+    return res.status(500).json({ success: false, message: "Failed to fetch slot settings" });
+  }
+};
+
+exports.toggleSlotConfig = async (req, res) => {
+  try {
+    const { id, is_active } = req.body;
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Slot ID required" });
+    }
+    await pool.query("UPDATE admin_slot_config SET is_active = ? WHERE id = ?", [Boolean(is_active), id]);
+    return res.json({ success: true, message: "Slot config updated successfully" });
+  } catch (err) {
+    console.error("Toggle slot config error:", err);
+    return res.status(500).json({ success: false, message: "Failed to update slot config" });
+  }
+};
+
+exports.blockSlot = async (req, res) => {
+  try {
+    const { block_date, slot_time, reason } = req.body;
+    if (!block_date) {
+      return res.status(400).json({ success: false, message: "Date is required" });
+    }
+    await pool.query(
+      "INSERT INTO admin_blocked_slots (block_date, slot_time, reason) VALUES (?, ?, ?)",
+      [block_date, slot_time || null, reason || null]
+    );
+    return res.json({ success: true, message: "Slot/Date blocked successfully" });
+  } catch (err) {
+    console.error("Block slot error:", err);
+    return res.status(500).json({ success: false, message: "Failed to block slot" });
+  }
+};
+
+exports.unblockSlot = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Block ID required" });
+    }
+    await pool.query("DELETE FROM admin_blocked_slots WHERE id = ?", [id]);
+    return res.json({ success: true, message: "Block removed successfully" });
+  } catch (err) {
+    console.error("Unblock slot error:", err);
+    return res.status(500).json({ success: false, message: "Failed to remove block" });
+  }
+};
+
+exports.saveShiftConfig = async (req, res) => {
+  try {
+    const { id, shift_type, start_time, end_time, max_capacity, call_duration_mins, grace_period_mins, is_active } = req.body;
+    if (!shift_type || !start_time || !end_time) {
+      return res.status(400).json({ success: false, message: "Shift type, start time, and end time are required" });
+    }
+
+    let targetId = id;
+    if (!targetId) {
+      const [existing] = await pool.query("SELECT id FROM admin_shift_config WHERE shift_type = ?", [shift_type]);
+      if (existing.length > 0) {
+        targetId = existing[0].id;
+      }
+    }
+
+    if (targetId) {
+      await pool.query(
+        "UPDATE admin_shift_config SET shift_type = ?, start_time = ?, end_time = ?, max_capacity = ?, call_duration_mins = ?, grace_period_mins = ?, is_active = ? WHERE id = ?",
+        [shift_type, start_time, end_time, Number(max_capacity) || 15, Number(call_duration_mins) || 20, Number(grace_period_mins) || 10, is_active !== false, targetId]
+      );
+    } else {
+      await pool.query(
+        "INSERT INTO admin_shift_config (shift_type, start_time, end_time, max_capacity, call_duration_mins, grace_period_mins, is_active) VALUES (?, ?, ?, ?, ?, ?, true)",
+        [shift_type, start_time, end_time, Number(max_capacity) || 15, Number(call_duration_mins) || 20, Number(grace_period_mins) || 10]
+      );
+    }
+    return res.json({ success: true, message: "Shift configuration saved successfully" });
+  } catch (err) {
+    console.error("Save shift config error:", err);
+    return res.status(500).json({ success: false, message: "Failed to save shift config" });
+  }
+};
+
+exports.deleteShiftConfig = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Shift ID required" });
+    }
+    await pool.query("DELETE FROM admin_shift_config WHERE id = ?", [id]);
+    return res.json({ success: true, message: "Shift deleted successfully" });
+  } catch (err) {
+    console.error("Delete shift error:", err);
+    return res.status(500).json({ success: false, message: "Failed to delete shift" });
+  }
+};

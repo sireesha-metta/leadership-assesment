@@ -75,6 +75,21 @@ function generateAssessmentPdf(payload) {
 
       doc.moveDown();
 
+      const booking = payload?.bookingDetails || {};
+      const scheduledDate = booking.scheduledDate || payload?.scheduledDate;
+      const scheduledTime = booking.scheduledTime || payload?.scheduledTime || "-";
+      const timeZone = booking.timeZone || payload?.timeZone || "-";
+
+      if (scheduledDate) {
+        drawSectionTitle(doc, "Scheduled Discussion Details");
+        doc.font("Helvetica").fontSize(11).fillColor("#111827");
+        doc.text(`Topic: 20 mins Discussion with Lorraine Burns`);
+        doc.text(`Date: ${scheduledDate}`);
+        doc.text(`Time: ${scheduledTime}`);
+        doc.text(`Time Zone: ${timeZone}`);
+        doc.moveDown();
+      }
+
       drawSectionTitle(doc, "Assessment Summary");
       doc.font("Helvetica").fontSize(11).fillColor("#111827");
       doc.text(`Total Score: ${totalScore}`);
