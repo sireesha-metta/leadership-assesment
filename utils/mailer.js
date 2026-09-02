@@ -383,11 +383,6 @@ async function sendCancellationUserEmail(to, payload) {
 
   return await sendViaGraph(to, subject, html, []);
 
-      // <div style="margin:25px 0;text-align:center;">
-        //   <a href="https://www.leanin-coaching.com/assessment?step=calendar&email=${encodeURIComponent(to)}&action=reschedule" style="background-color:#c8a85b;color:#1c1c1c;text-decoration:none;padding:12px 28px;font-size:14px;font-weight:bold;border-radius:6px;display:inline-block;box-shadow:0 2px 4px rgba(0,0,0,0.15);">
-        //     📅 Schedule New Discussion Slot
-        //   </a>
-        // </div>371
 }
 
 async function sendCancellationAdminEmail(payload) {
