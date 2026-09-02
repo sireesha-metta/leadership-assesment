@@ -187,6 +187,7 @@ async function findRespondentByEmail(email) {
 
   return rows.length > 0 ? rows[0] : null;
 }
+exports.findRespondentByEmail = findRespondentByEmail;
 
 async function findRespondentByMobile(mobile) {
   const mobileHash = hashMobileIdentifier(normalizeMobileDigits(mobile));
@@ -504,15 +505,15 @@ exports.upsertAssessmentRespondent = async (req, res) => {
 
     const { firstName, lastName, mobile, email } = req.body || {};
 
+    const normalizedEmail = normalizeEmail(email);
     const normalizedFirstName = String(firstName || "").trim();
     const normalizedLastName = String(lastName || "").trim();
-    const normalizedEmail = normalizeEmail(email);
     const normalizedMobile = normalizeMobileDigits(mobile);
 
-    if (!normalizedFirstName || !normalizedLastName || !normalizedEmail) {
+    if (!normalizedEmail) {
       return res.status(400).json({
         success: false,
-        message: "First name, last name and email are required.",
+        message: "Email address is required.",
       });
     }
 
@@ -526,6 +527,48 @@ exports.upsertAssessmentRespondent = async (req, res) => {
 
     const existingByEmail = await findRespondentByEmail(normalizedEmail);
     const existingRespondentId = existingByEmail ? Number(existingByEmail.id) : null;
+
+    if (existingByEmail) {
+      const existing = toDecryptedRespondent(existingByEmail);
+      const existingFirstName = String(existing.firstname || "").trim();
+      const existingLastName = String(existing.lastname || "").trim();
+      const existingMobile = normalizeMobileDigits(existing.mobile);
+
+      // If name was not provided or matches existing DB record, return existing DB record
+      if (!normalizedFirstName || !normalizedLastName) {
+        return res.json({
+          success: true,
+          message: "Respondent details fetched from database.",
+          data: {
+            id: Number(existing.id),
+            firstName: existingFirstName,
+            lastName: existingLastName,
+            firstname: existingFirstName,
+            lastname: existingLastName,
+            email: normalizedEmail,
+            mobile: existingMobile,
+            role: normalizeRole(existing.role),
+          },
+        });
+      }
+    }
+
+    if (!normalizedFirstName || !normalizedLastName) {
+      return res.json({
+        success: true,
+        message: "Respondent lookup complete.",
+        data: {
+          id: existingRespondentId,
+          firstName: "",
+          lastName: "",
+          firstname: "",
+          lastname: "",
+          email: normalizedEmail,
+          mobile: "",
+          role: "RESPONDENT",
+        },
+      });
+    }
 
     const alreadyCompleted = await hasAssessmentSubmissionForIdentity({
       respondentId: existingRespondentId,

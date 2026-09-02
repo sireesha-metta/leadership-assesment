@@ -781,17 +781,25 @@ exports.submitAssessment = async (req, res) => {
   try {
     const normalizedPayload = normalizeSubmissionPayload(req.body || {});
 
-    if (!normalizedPayload.firstName || normalizedPayload.firstName === "there" || normalizedPayload.firstName === "Lookup") {
-      const { findRespondentByEmail } = require("./authController");
-      const { toDecryptedRespondent } = require("../utils/dataSecurity");
-      const existingResp = await findRespondentByEmail(normalizedPayload.email);
-      if (existingResp) {
-        const decrypted = toDecryptedRespondent(existingResp);
-        const f = String(decrypted.firstname || "").trim();
-        const l = String(decrypted.lastname || "").trim();
-        if (f) normalizedPayload.firstName = f;
-        if (l) normalizedPayload.lastName = l;
-        if (f || l) normalizedPayload.respondent = `${f} ${l}`.trim();
+    if (normalizedPayload.email) {
+      try {
+        const { findRespondentByEmail } = require("./authController");
+        const { toDecryptedRespondent } = require("../utils/dataSecurity");
+        if (typeof findRespondentByEmail === "function") {
+          const existingResp = await findRespondentByEmail(normalizedPayload.email);
+          if (existingResp) {
+            const decrypted = toDecryptedRespondent(existingResp);
+            const f = String(decrypted.firstname || "").trim();
+            const l = String(decrypted.lastname || "").trim();
+            if (f) normalizedPayload.firstName = f;
+            if (l) normalizedPayload.lastName = l;
+            if (f || l) normalizedPayload.respondent = `${f} ${l}`.trim();
+            if (decrypted.mobile) normalizedPayload.mobile = String(decrypted.mobile).trim();
+            if (decrypted.id) normalizedPayload.respondentId = Number(decrypted.id);
+          }
+        }
+      } catch (err) {
+        console.error("Respondent DB lookup warning:", err);
       }
     }
     const existingSubmission = await findExistingAssessmentSubmission({
@@ -1029,6 +1037,94 @@ exports.deleteSubmission = async (req, res) => {
       message: "Failed to delete submission.",
       details: error.message,
     });
+  }
+};
+
+exports.cancelBooking = async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required to cancel an appointment." });
+    }
+
+    const [rows] = await db.execute(
+      `SELECT id, respondent_name, email, submission_payload FROM assessment_submissions WHERE LOWER(TRIM(email)) = ? ORDER BY id DESC LIMIT 1`,
+      [email]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "No active submission/booking found for this email address." });
+    }
+
+    const row = rows[0];
+    let payload = {};
+    try {
+      payload = typeof row.submission_payload === "string" ? JSON.parse(row.submission_payload) : row.submission_payload || {};
+    } catch (e) {}
+
+    const booking = payload.bookingDetails || {};
+    const scheduledDate = booking.scheduledDate || payload.scheduledDate || "";
+    const scheduledTime = booking.scheduledTime || payload.scheduledTime || "";
+    const timeZone = booking.timeZone || payload.timeZone || "India,Asia/Kolkata";
+
+    const updatedBookingDetails = {
+      ...booking,
+      isCancelled: true,
+      status: "cancelled",
+      cancelledAt: new Date().toISOString(),
+    };
+
+    const updatedPayload = {
+      ...payload,
+      isCancelled: true,
+      bookingDetails: updatedBookingDetails,
+    };
+
+    await db.execute(
+      `UPDATE assessment_submissions SET submission_payload = ? WHERE id = ?`,
+      [JSON.stringify(updatedPayload), row.id]
+    );
+
+    const mailPayload = {
+      firstName: payload.firstName || row.respondent_name || "Participant",
+      lastName: payload.lastName || "",
+      respondent: row.respondent_name || payload.respondent || "Participant",
+      email: row.email,
+      scheduledDate,
+      scheduledTime,
+      timeZone,
+    };
+
+    const { sendCancellationUserEmail, sendCancellationAdminEmail } = require("../utils/mailer");
+    let userMailSent = false;
+    let adminMailSent = false;
+
+    try {
+      userMailSent = await sendCancellationUserEmail(row.email, mailPayload);
+    } catch (e) {
+      console.error("Failed to send cancellation user email:", e);
+    }
+
+    try {
+      adminMailSent = await sendCancellationAdminEmail(mailPayload);
+    } catch (e) {
+      console.error("Failed to send cancellation admin email:", e);
+    }
+
+    return res.json({
+      success: true,
+      message: "Appointment cancelled successfully. The time slot is now released back to available slots.",
+      userMailSent,
+      adminMailSent,
+      data: {
+        scheduledDate,
+        scheduledTime,
+        email: row.email,
+      },
+    });
+  } catch (error) {
+    console.error("Error cancelling booking:", error);
+    return res.status(500).json({ success: false, message: "Internal server error while cancelling appointment.", details: error.message });
   }
 };
 

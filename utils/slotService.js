@@ -144,6 +144,17 @@ async function getAvailableAndBookedSlots(dateStr) {
   const bookedTimeSlots = [];
   latestSubmissionsByEmail.forEach((payload) => {
     const booking = payload?.bookingDetails || {};
+    const isCancelled = Boolean(
+      payload?.isCancelled ||
+      booking.isCancelled ||
+      payload?.status === "cancelled" ||
+      booking.status === "cancelled"
+    );
+
+    if (isCancelled) {
+      return;
+    }
+
     const scheduledDate = booking.scheduledDate || payload?.scheduledDate;
     const scheduledTime = booking.scheduledTime || payload?.scheduledTime;
 
