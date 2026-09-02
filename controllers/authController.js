@@ -533,12 +533,18 @@ exports.upsertAssessmentRespondent = async (req, res) => {
     });
 
     if (alreadyCompleted) {
+      const existing = existingByEmail ? toDecryptedRespondent(existingByEmail) : {};
       const submittedAt = alreadyCompleted.submitted_at || alreadyCompleted.created_at || new Date().toISOString();
       return res.status(409).json({
         success: false,
         alreadySubmitted: true,
         message: "Assessment already submitted. Assignment already done.",
         data: {
+          id: existing.id ? Number(existing.id) : null,
+          firstName: String(existing.firstname || "").trim(),
+          lastName: String(existing.lastname || "").trim(),
+          email: normalizedEmail,
+          mobile: String(existing.mobile || "").trim(),
           submittedAt,
         },
       });

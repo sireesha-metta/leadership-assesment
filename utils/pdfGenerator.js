@@ -24,17 +24,74 @@ function ensureSpace(doc, minHeight = 120) {
   }
 }
 
-function buildResponses(payload) {
-  const directResponses = Array.isArray(payload?.questionResponses) ? payload.questionResponses : [];
-  if (directResponses.length > 0) {
-    return directResponses;
+const DEFAULT_QUESTIONS_LIST = [
+  { rowIndex: 6, number: 1, question: "When your team discusses a decision, who typically speaks first?", weight: 2 },
+  { rowIndex: 7, number: 2, question: "Think of a recent decision where something important emerged after the fact. What do you think stopped it surfacing in the room?", weight: 2 },
+  { rowIndex: 8, number: 3, question: "How would you describe the pace of decisions in your leadership meetings?", weight: 1 },
+  { rowIndex: 9, number: 4, question: "Are there people in your team you know have strong views but rarely voice them in meetings?", weight: 2 },
+  { rowIndex: 12, number: 5, question: "Who challenges in your leadership meetings?", weight: 2 },
+  { rowIndex: 13, number: 6, question: "When someone does push back in a discussion, how does the room typically respond?", weight: 2 },
+  { rowIndex: 14, number: 7, question: "Are there topics in your leadership discussions that feel quietly off-limits — where challenge just doesn't happen?", weight: 1 },
+  { rowIndex: 15, number: 8, question: "After meetings, do you hear different views from people in the corridor to what was said in the room?", weight: 2 },
+  { rowIndex: 18, number: 9, question: "When you signal your own view early in a discussion, what tends to happen?", weight: 3 },
+  { rowIndex: 19, number: 10, question: "Do you feel you hear from the people with the most relevant knowledge, or those most comfortable speaking?", weight: 3 },
+  { rowIndex: 20, number: 11, question: "When a discussion goes in circles, what is your instinct?", weight: 2 },
+  { rowIndex: 21, number: 12, question: "If you could change one thing about how your team makes complex decisions, what would it be?", weight: 1 },
+];
+
+function extractAnswerFromRowMap(byRow, q, idx) {
+  if (!byRow || typeof byRow !== "object") return "";
+
+  const qNum = q.number || (idx + 1);
+  const rIdx = q.rowIndex;
+
+  const candidateKeys = [
+    rIdx, String(rIdx),
+    idx, String(idx),
+    qNum, String(qNum),
+    `q${qNum}`, `q${idx + 1}`, `Q${qNum}`,
+    `row${rIdx}`, `row_${rIdx}`,
+  ];
+
+  for (const key of candidateKeys) {
+    const val = byRow[key];
+    if (val !== undefined && val !== null && String(val).trim() !== "" && String(val).trim() !== "-") {
+      return String(val).trim();
+    }
   }
 
-  const byRow = payload?.answersByRow && typeof payload.answersByRow === "object" ? payload.answersByRow : {};
+  return "";
+}
 
-  return Object.entries(byRow).filter(([, answer]) => String(answer ?? "").trim()).sort((a, b) => Number(a[0]) - Number(b[0])).map(([rowIndex, answer], idx) => ({
-    rowIndex: Number(rowIndex), number: idx + 1, question: `Question (Row ${rowIndex})`, answer: String(answer), score: null, weight: null, weightedScore: null,
-  }));
+function buildResponses(payload) {
+  const byRow = payload?.answersByRow && typeof payload.answersByRow === "object" ? payload.answersByRow : {};
+  const existingResponses = Array.isArray(payload?.questionResponses) ? payload.questionResponses : [];
+
+  const existingMap = new Map();
+  existingResponses.forEach((item, idx) => {
+    if (item && (item.question || item.number || item.rowIndex)) {
+      const key = item.rowIndex || item.number || (idx + 1);
+      existingMap.set(String(key), item);
+    }
+  });
+
+  return DEFAULT_QUESTIONS_LIST.map((q, idx) => {
+    const existingItem = existingMap.get(String(q.rowIndex)) || existingMap.get(String(q.number));
+    const extractedAns = extractAnswerFromRowMap(byRow, q, idx);
+    const finalAnswer = (existingItem && String(existingItem.answer || "").trim() && String(existingItem.answer).trim() !== "-")
+      ? String(existingItem.answer).trim()
+      : extractedAns;
+
+    return {
+      rowIndex: q.rowIndex,
+      number: q.number,
+      question: q.question,
+      answer: finalAnswer || "-",
+      score: existingItem?.score ?? null,
+      weight: existingItem?.weight ?? q.weight,
+      weightedScore: existingItem?.weightedScore ?? null,
+    };
+  });
 }
 
 function formatMetric(value) {
