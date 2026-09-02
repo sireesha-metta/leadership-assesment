@@ -224,21 +224,96 @@ async function getSubmissionRecordByRespondentId(respondentId) {
 async function saveSubmissionRecord(respondentId, payload) {
   await ensureSubmissionsTable();
 
-  await db.execute(
-    `INSERT INTO assessment_submissions
-      (respondent_id, assessment_type, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      Number(respondentId) > 0 ? respondentId : null,
-      ASSESSMENT_TYPE,
-      payload.respondent,
-      payload.email,
-      payload.submittedAt,
-      payload.totalScore,
-      payload.totalWeightedScore,
-      JSON.stringify(payload),
-    ]
-  );
+  const normalizedEmail = String(payload.email || "").trim().toLowerCase();
+  const normalizedRespondentId = Number(respondentId) > 0 ? respondentId : null;
+
+  let existingRow = null;
+  if (normalizedRespondentId) {
+    const [rows] = await db.execute(
+      `SELECT id, total_score, total_weighted_score, submission_payload FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? LIMIT 1`,
+      [normalizedRespondentId, ASSESSMENT_TYPE]
+    );
+    if (rows.length > 0) existingRow = rows[0];
+  }
+  if (!existingRow && normalizedEmail) {
+    const [rows] = await db.execute(
+      `SELECT id, total_score, total_weighted_score, submission_payload FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? LIMIT 1`,
+      [ASSESSMENT_TYPE, normalizedEmail]
+    );
+    if (rows.length > 0) existingRow = rows[0];
+  }
+
+  if (existingRow) {
+    let existingPayload = {};
+    try {
+      existingPayload = typeof existingRow.submission_payload === "string"
+        ? JSON.parse(existingRow.submission_payload)
+        : existingRow.submission_payload || {};
+    } catch (e) {}
+
+    const incomingValidCount = countNonEmptyAnswers(payload.answersByRow, payload.questionResponses);
+
+    const mergedAnswersByRow = (incomingValidCount > 0)
+      ? payload.answersByRow
+      : (existingPayload.answersByRow || {});
+
+    const mergedQuestionResponses = (incomingValidCount > 0)
+      ? payload.questionResponses
+      : (existingPayload.questionResponses || []);
+
+    const mergedTotalScore = Number(payload.totalScore || 0) > 0
+      ? payload.totalScore
+      : Number(existingRow.total_score || existingPayload.totalScore || 0);
+
+    const mergedWeightedScore = Number(payload.totalWeightedScore || 0) > 0
+      ? payload.totalWeightedScore
+      : Number(existingRow.total_weighted_score || existingPayload.totalWeightedScore || 0);
+
+    const mergedPayload = {
+      ...existingPayload,
+      ...payload,
+      totalScore: mergedTotalScore,
+      totalWeightedScore: mergedWeightedScore,
+      answersByRow: mergedAnswersByRow,
+      questionResponses: mergedQuestionResponses,
+    };
+
+    await db.execute(
+      `UPDATE assessment_submissions
+       SET respondent_name = ?,
+           email = ?,
+           submitted_at = ?,
+           total_score = ?,
+           total_weighted_score = ?,
+           submission_payload = ?
+       WHERE id = ?`,
+      [
+        mergedPayload.respondent,
+        mergedPayload.email,
+        mergedPayload.submittedAt,
+        mergedTotalScore,
+        mergedWeightedScore,
+        JSON.stringify(mergedPayload),
+        existingRow.id,
+      ]
+    );
+  } else {
+    await db.execute(
+      `INSERT INTO assessment_submissions
+        (respondent_id, assessment_type, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        normalizedRespondentId,
+        ASSESSMENT_TYPE,
+        payload.respondent,
+        payload.email,
+        payload.submittedAt,
+        payload.totalScore,
+        payload.totalWeightedScore,
+        JSON.stringify(payload),
+      ]
+    );
+  }
 }
 
 async function findExistingAssessmentSubmission({ respondentId, email }) {
@@ -278,6 +353,77 @@ async function findExistingAssessmentSubmission({ respondentId, email }) {
 }
 
 
+const DEFAULT_QUESTIONS_LIST = [
+  { rowIndex: 6, number: 1, question: "When your team discusses a decision, who typically speaks first?", weight: 2 },
+  { rowIndex: 7, number: 2, question: "Think of a recent decision where something important emerged after the fact. What do you think stopped it surfacing in the room?", weight: 2 },
+  { rowIndex: 8, number: 3, question: "How would you describe the pace of decisions in your leadership meetings?", weight: 1 },
+  { rowIndex: 9, number: 4, question: "Are there people in your team you know have strong views but rarely voice them in meetings?", weight: 2 },
+  { rowIndex: 12, number: 5, question: "Who challenges in your leadership meetings?", weight: 2 },
+  { rowIndex: 13, number: 6, question: "When someone does push back in a discussion, how does the room typically respond?", weight: 2 },
+  { rowIndex: 14, number: 7, question: "Are there topics in your leadership discussions that feel quietly off-limits — where challenge just doesn't happen?", weight: 1 },
+  { rowIndex: 15, number: 8, question: "After meetings, do you hear different views from people in the corridor to what was said in the room?", weight: 2 },
+  { rowIndex: 18, number: 9, question: "When you signal your own view early in a discussion, what tends to happen?", weight: 3 },
+  { rowIndex: 19, number: 10, question: "Do you feel you hear from the people with the most relevant knowledge, or those most comfortable speaking?", weight: 3 },
+  { rowIndex: 20, number: 11, question: "When a discussion goes in circles, what is your instinct?", weight: 2 },
+  { rowIndex: 21, number: 12, question: "If you could change one thing about how your team makes complex decisions, what would it be?", weight: 1 },
+];
+
+function extractAnswerFromRowMap(byRow, q, idx) {
+  if (!byRow || typeof byRow !== "object") return "";
+
+  const qNum = q.number || (idx + 1);
+  const rIdx = q.rowIndex;
+
+  const candidateKeys = [
+    rIdx, String(rIdx),
+    idx, String(idx),
+    qNum, String(qNum),
+    `q${qNum}`, `q${idx + 1}`, `Q${qNum}`,
+    `row${rIdx}`, `row_${rIdx}`,
+  ];
+
+  for (const key of candidateKeys) {
+    const val = byRow[key];
+    if (val !== undefined && val !== null && String(val).trim() !== "" && String(val).trim() !== "-") {
+      return String(val).trim();
+    }
+  }
+
+  return "";
+}
+
+function buildCompleteQuestionResponses(existingQuestionResponses, answersByRow) {
+  const byRow = answersByRow && typeof answersByRow === "object" ? answersByRow : {};
+  const existingMap = new Map();
+
+  if (Array.isArray(existingQuestionResponses)) {
+    existingQuestionResponses.forEach((item, idx) => {
+      if (item && (item.question || item.number || item.rowIndex)) {
+        const key = item.rowIndex || item.number || (idx + 1);
+        existingMap.set(String(key), item);
+      }
+    });
+  }
+
+  return DEFAULT_QUESTIONS_LIST.map((q, idx) => {
+    const existingItem = existingMap.get(String(q.rowIndex)) || existingMap.get(String(q.number));
+    const extractedAns = extractAnswerFromRowMap(byRow, q, idx);
+    const finalAnswer = (existingItem && String(existingItem.answer || "").trim() && String(existingItem.answer).trim() !== "-")
+      ? String(existingItem.answer).trim()
+      : extractedAns;
+
+    return {
+      rowIndex: q.rowIndex,
+      number: q.number,
+      question: q.question,
+      answer: finalAnswer || "—",
+      score: existingItem?.score ?? null,
+      weight: existingItem?.weight ?? q.weight,
+      weightedScore: existingItem?.weightedScore ?? null,
+    };
+  });
+}
+
 function normalizeSubmissionRow(row) {
   const payload = typeof row.submission_payload === "string"
     ? JSON.parse(row.submission_payload || "{}")
@@ -285,6 +431,7 @@ function normalizeSubmissionRow(row) {
 
   const submittedAt = payload.submittedAt || row.submitted_at || null;
   const timestamp = submittedAt || row.created_at || null;
+  const fullQuestions = buildCompleteQuestionResponses(payload.questionResponses, payload.answersByRow);
 
   return {
     id: Number(row.id),
@@ -295,11 +442,87 @@ function normalizeSubmissionRow(row) {
     timestamp,
     totalScore: Number(payload.totalScore ?? row.total_score ?? 0),
     totalWeightedScore: Number(payload.totalWeightedScore ?? row.total_weighted_score ?? 0),
-    questionResponses: Array.isArray(payload.questionResponses) ? payload.questionResponses : [],
-    questions: Array.isArray(payload.questionResponses) ? payload.questionResponses : [],
+    questionResponses: fullQuestions,
+    questions: fullQuestions,
     answersByRow: payload.answersByRow || {},
     createdAt: row.created_at,
   };
+}
+
+function countNonEmptyAnswers(answersByRow, questionResponses) {
+  let count = 0;
+  if (Array.isArray(questionResponses)) {
+    count += questionResponses.filter((q) => q && String(q.answer || "").trim() !== "" && String(q.answer).trim() !== "—" && String(q.answer).trim() !== "-").length;
+  }
+  if (count > 0) return count;
+
+  if (answersByRow && typeof answersByRow === "object") {
+    Object.values(answersByRow).forEach((v) => {
+      if (v !== undefined && v !== null && String(v).trim() !== "" && String(v).trim() !== "—" && String(v).trim() !== "-") {
+        count += 1;
+      }
+    });
+  }
+  return count;
+}
+
+async function findBestScoresForEmail(email) {
+  if (!email) return null;
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  const [rows] = await db.execute(
+    `SELECT total_score, total_weighted_score, submission_payload
+     FROM assessment_submissions
+     WHERE LOWER(TRIM(email)) = ?
+     ORDER BY id DESC`,
+    [normalizedEmail]
+  );
+
+  for (const row of rows) {
+    let payload = {};
+    try {
+      payload = typeof row.submission_payload === "string" ? JSON.parse(row.submission_payload) : row.submission_payload || {};
+    } catch (e) {}
+
+    const qResp = Array.isArray(payload.questionResponses) ? payload.questionResponses : [];
+    const aByRow = payload.answersByRow || {};
+    const validCount = countNonEmptyAnswers(aByRow, qResp);
+
+    if (validCount > 0) {
+      return {
+        totalScore: Number(row.total_score || payload.totalScore || 0),
+        totalWeightedScore: Number(row.total_weighted_score || payload.totalWeightedScore || 0),
+        answersByRow: aByRow,
+        questionResponses: qResp,
+      };
+    }
+  }
+
+  const [draftRows] = await db.execute(
+    `SELECT draft_payload FROM assessment_drafts
+     WHERE draft_payload LIKE ?
+     ORDER BY id DESC LIMIT 1`,
+    [`%${normalizedEmail}%`]
+  );
+
+  if (draftRows.length > 0) {
+    let dp = {};
+    try {
+      dp = typeof draftRows[0].draft_payload === "string" ? JSON.parse(draftRows[0].draft_payload) : draftRows[0].draft_payload || {};
+    } catch (e) {}
+
+    const validDraftCount = countNonEmptyAnswers(dp.answersByRow, dp.questionResponses);
+    if (validDraftCount > 0) {
+      return {
+        totalScore: Number(dp.totalScore || 0),
+        totalWeightedScore: Number(dp.totalWeightedScore || 0),
+        answersByRow: dp.answersByRow || {},
+        questionResponses: Array.isArray(dp.questionResponses) ? dp.questionResponses : [],
+      };
+    }
+  }
+
+  return null;
 }
 
 async function fetchSubmissionsFromDatabase() {
@@ -311,7 +534,30 @@ async function fetchSubmissionsFromDatabase() {
      ORDER BY submitted_at DESC, id DESC`
   );
 
-  return rows.map(normalizeSubmissionRow);
+  const result = [];
+  for (const r of rows) {
+    const norm = normalizeSubmissionRow(r);
+    const validCount = countNonEmptyAnswers(norm.answersByRow, norm.questionResponses);
+
+    if ((norm.totalScore === 0 || validCount === 0) && norm.email) {
+      const best = await findBestScoresForEmail(norm.email);
+      if (best) {
+        if (best.totalScore > 0) {
+          norm.totalScore = best.totalScore;
+          norm.totalWeightedScore = best.totalWeightedScore;
+        }
+        if (countNonEmptyAnswers(best.answersByRow, best.questionResponses) > 0) {
+          norm.answersByRow = best.answersByRow;
+          const fullBestQuestions = buildCompleteQuestionResponses(best.questionResponses, best.answersByRow);
+          norm.questionResponses = fullBestQuestions;
+          norm.questions = fullBestQuestions;
+        }
+      }
+    }
+    result.push(norm);
+  }
+
+  return result;
 }
 
 async function deleteSubmissionById(id) {
@@ -534,18 +780,49 @@ exports.deleteDraft = async (req, res) => {
 exports.submitAssessment = async (req, res) => {
   try {
     const normalizedPayload = normalizeSubmissionPayload(req.body || {});
+
+    if (normalizedPayload.email) {
+      try {
+        const { findRespondentByEmail } = require("./authController");
+        const { toDecryptedRespondent } = require("../utils/dataSecurity");
+        if (typeof findRespondentByEmail === "function") {
+          const existingResp = await findRespondentByEmail(normalizedPayload.email);
+          if (existingResp) {
+            const decrypted = toDecryptedRespondent(existingResp);
+            const f = String(decrypted.firstname || "").trim();
+            const l = String(decrypted.lastname || "").trim();
+            if (f) normalizedPayload.firstName = f;
+            if (l) normalizedPayload.lastName = l;
+            if (f || l) normalizedPayload.respondent = `${f} ${l}`.trim();
+            if (decrypted.mobile) normalizedPayload.mobile = String(decrypted.mobile).trim();
+            if (decrypted.id) normalizedPayload.respondentId = Number(decrypted.id);
+          }
+        }
+      } catch (err) {
+        console.error("Respondent DB lookup warning:", err);
+      }
+    }
     const existingSubmission = await findExistingAssessmentSubmission({
       respondentId: req.user?.id,
       email: normalizedPayload.email,
     });
 
-    if (existingSubmission) {
-      return res.status(409).json({
-        success: false,
-        alreadySubmitted: true,
-        message: "Assessment already submitted. You can only submit once.",
-        data: existingSubmission,
-      });
+    const isReschedule = Boolean(req.body?.isReschedule || req.body?.bookingDetails?.isReschedule || existingSubmission);
+
+    const incomingValidCount = countNonEmptyAnswers(normalizedPayload.answersByRow, normalizedPayload.questionResponses);
+
+    if (isReschedule || incomingValidCount === 0) {
+      const best = await findBestScoresForEmail(normalizedPayload.email);
+      if (best) {
+        if (incomingValidCount === 0) {
+          normalizedPayload.answersByRow = best.answersByRow;
+          normalizedPayload.questionResponses = buildCompleteQuestionResponses(best.questionResponses, best.answersByRow);
+        }
+        if (normalizedPayload.totalScore === 0 && best.totalScore > 0) {
+          normalizedPayload.totalScore = best.totalScore;
+          normalizedPayload.totalWeightedScore = best.totalWeightedScore;
+        }
+      }
     }
 
     const { isSlotBookedOrBlocked } = require("../utils/slotService");
@@ -567,29 +844,34 @@ exports.submitAssessment = async (req, res) => {
     let parsed = null;
     let rawText = null;
 
-    try {
-      const upstream = await fetchWithTimeoutAndRetry(scriptUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(outgoingPayload),
-      });
+    if (!isReschedule) {
+      try {
+        const upstream = await fetchWithTimeoutAndRetry(scriptUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(outgoingPayload),
+        });
 
-      rawText = await upstream.text();
-      parsed = parseTextResult(rawText);
+        rawText = await upstream.text();
+        parsed = parseTextResult(rawText);
 
-      const normalizedText = String(parsed.text || "").trim().toLowerCase();
-      acceptedByUpstream =
-        parsed?.json?.success === true ||
-        normalizedText === "success" ||
-        normalizedText.includes("saved") ||
-        normalizedText.includes("updated") ||
-        normalizedText.includes("success");
-    } catch (upstreamError) {
-      console.error('Failed to submit to Google Script upstream:', upstreamError.message || upstreamError);
-      rawText = upstreamError.message || String(upstreamError);
-      parsed = { json: { success: false, message: rawText }, text: rawText };
+        const normalizedText = String(parsed.text || "").trim().toLowerCase();
+        acceptedByUpstream =
+          parsed?.json?.success === true ||
+          normalizedText === "success" ||
+          normalizedText.includes("saved") ||
+          normalizedText.includes("updated") ||
+          normalizedText.includes("success");
+      } catch (upstreamError) {
+        console.error('Failed to submit to Google Script upstream:', upstreamError.message || upstreamError);
+        rawText = upstreamError.message || String(upstreamError);
+        parsed = { json: { success: false, message: rawText }, text: rawText };
+      }
+    } else {
+      acceptedByUpstream = true;
+      parsed = { json: { success: true, message: "Skipped duplicate Google Sheet append on reschedule." }, text: "success" };
     }
 
     let dbSaved = false;
@@ -755,6 +1037,94 @@ exports.deleteSubmission = async (req, res) => {
       message: "Failed to delete submission.",
       details: error.message,
     });
+  }
+};
+
+exports.cancelBooking = async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required to cancel an appointment." });
+    }
+
+    const [rows] = await db.execute(
+      `SELECT id, respondent_name, email, submission_payload FROM assessment_submissions WHERE LOWER(TRIM(email)) = ? ORDER BY id DESC LIMIT 1`,
+      [email]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: "No active submission/booking found for this email address." });
+    }
+
+    const row = rows[0];
+    let payload = {};
+    try {
+      payload = typeof row.submission_payload === "string" ? JSON.parse(row.submission_payload) : row.submission_payload || {};
+    } catch (e) {}
+
+    const booking = payload.bookingDetails || {};
+    const scheduledDate = booking.scheduledDate || payload.scheduledDate || "";
+    const scheduledTime = booking.scheduledTime || payload.scheduledTime || "";
+    const timeZone = booking.timeZone || payload.timeZone || "India,Asia/Kolkata";
+
+    const updatedBookingDetails = {
+      ...booking,
+      isCancelled: true,
+      status: "cancelled",
+      cancelledAt: new Date().toISOString(),
+    };
+
+    const updatedPayload = {
+      ...payload,
+      isCancelled: true,
+      bookingDetails: updatedBookingDetails,
+    };
+
+    await db.execute(
+      `UPDATE assessment_submissions SET submission_payload = ? WHERE id = ?`,
+      [JSON.stringify(updatedPayload), row.id]
+    );
+
+    const mailPayload = {
+      firstName: payload.firstName || row.respondent_name || "Participant",
+      lastName: payload.lastName || "",
+      respondent: row.respondent_name || payload.respondent || "Participant",
+      email: row.email,
+      scheduledDate,
+      scheduledTime,
+      timeZone,
+    };
+
+    const { sendCancellationUserEmail, sendCancellationAdminEmail } = require("../utils/mailer");
+    let userMailSent = false;
+    let adminMailSent = false;
+
+    try {
+      userMailSent = await sendCancellationUserEmail(row.email, mailPayload);
+    } catch (e) {
+      console.error("Failed to send cancellation user email:", e);
+    }
+
+    try {
+      adminMailSent = await sendCancellationAdminEmail(mailPayload);
+    } catch (e) {
+      console.error("Failed to send cancellation admin email:", e);
+    }
+
+    return res.json({
+      success: true,
+      message: "Appointment cancelled successfully. The time slot is now released back to available slots.",
+      userMailSent,
+      adminMailSent,
+      data: {
+        scheduledDate,
+        scheduledTime,
+        email: row.email,
+      },
+    });
+  } catch (error) {
+    console.error("Error cancelling booking:", error);
+    return res.status(500).json({ success: false, message: "Internal server error while cancelling appointment.", details: error.message });
   }
 };
 

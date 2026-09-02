@@ -122,27 +122,48 @@ async function getAvailableAndBookedSlots(dateStr) {
   const allBlockedSlots = Array.from(new Set([...blockedTimeSlots, ...disabledByAdmin]));
 
   const [submissions] = await db.query(
-    "SELECT submission_payload FROM assessment_submissions"
+    "SELECT id, respondent_id, email, submission_payload FROM assessment_submissions ORDER BY id DESC"
   );
 
-  const bookedTimeSlots = [];
+  const latestSubmissionsByEmail = new Map();
   submissions.forEach((row) => {
     try {
       let payload = row.submission_payload;
       if (typeof payload === "string") {
         payload = JSON.parse(payload);
       }
-      const booking = payload?.bookingDetails || {};
-      const scheduledDate = booking.scheduledDate || payload?.scheduledDate;
-      const scheduledTime = booking.scheduledTime || payload?.scheduledTime;
+      const email = String(row.email || payload?.email || "").trim().toLowerCase();
+      const key = email || `resp_${row.respondent_id || row.id}`;
 
-      if (scheduledDate && scheduledTime) {
-        const subIsoDate = toIsoDate(scheduledDate);
-        if (subIsoDate === targetIsoDate || scheduledDate === dateStr) {
-          bookedTimeSlots.push(scheduledTime);
-        }
+      if (!latestSubmissionsByEmail.has(key)) {
+        latestSubmissionsByEmail.set(key, payload);
       }
     } catch (e) {}
+  });
+
+  const bookedTimeSlots = [];
+  latestSubmissionsByEmail.forEach((payload) => {
+    const booking = payload?.bookingDetails || {};
+    const isCancelled = Boolean(
+      payload?.isCancelled ||
+      booking.isCancelled ||
+      payload?.status === "cancelled" ||
+      booking.status === "cancelled"
+    );
+
+    if (isCancelled) {
+      return;
+    }
+
+    const scheduledDate = booking.scheduledDate || payload?.scheduledDate;
+    const scheduledTime = booking.scheduledTime || payload?.scheduledTime;
+
+    if (scheduledDate && scheduledTime) {
+      const subIsoDate = toIsoDate(scheduledDate);
+      if (subIsoDate === targetIsoDate || scheduledDate === dateStr) {
+        bookedTimeSlots.push(scheduledTime);
+      }
+    }
   });
 
   const availableSlots = activeSlots.filter(

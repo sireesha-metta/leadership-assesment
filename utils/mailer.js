@@ -96,9 +96,8 @@ async function sendAssessmentResultEmail(to, payload) {
 }
 
 function renderAssessmentHtml(payload) {
-  const firstName = String(payload?.firstName || payload?.respondent || "there").trim().toLowerCase();
-  // Capitalize first letter
-  const displayName = firstName.charAt(0).toUpperCase() + firstName.slice(1);
+  const rawName = String(payload?.firstName || payload?.firstname || payload?.respondent || "").trim();
+  const displayName = rawName ? rawName.charAt(0).toUpperCase() + rawName.slice(1) : "Participant";
 
   const booking = payload?.bookingDetails || {};
   const scheduledTime = booking.scheduledTime || "08:00pm";
@@ -178,7 +177,7 @@ function renderAssessmentHtml(payload) {
 
 function renderDraftReminderHtml(payload) {
   const first = String(payload?.firstName || "").trim();
-  const name = first || String(payload?.respondentName || "").trim() || "there";
+  const name = first || String(payload?.respondentName || "").trim() || "Participant";
 
   return `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#222;line-height:1.5">
@@ -329,4 +328,116 @@ function renderAdminNotificationHtml(payload) {
 `;
 }
 
-module.exports = { sendAssessmentResultEmail, sendDraftReminderEmail, renderAdminNotificationHtml, sendAdminNotificationEmail };
+async function sendCancellationUserEmail(to, payload) {
+  if (!to) return false;
+
+  const subject = "Discussion Slot Cancelled - Lean In Coaching";
+  let first = String(payload?.firstName || payload?.firstname || payload?.respondent || "").trim();
+
+  if (!first && to) {
+    try {
+      const { findRespondentByEmail } = require("../controllers/authController");
+      const { toDecryptedRespondent } = require("./dataSecurity");
+      const existing = await findRespondentByEmail(to);
+      if (existing) {
+        const decrypted = toDecryptedRespondent(existing);
+        first = String(decrypted.firstname || "").trim();
+      }
+    } catch (e) {}
+  }
+
+  const nameCapitalized = first ? first.charAt(0).toUpperCase() + first.slice(1) : "Participant";
+  const scheduledDate = payload?.scheduledDate || "your scheduled date";
+  const scheduledTime = payload?.scheduledTime || "your scheduled time";
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;line-height:1.7;padding:20px;max-width:640px;margin:0 auto;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:10px;">
+      <div style="background-color:#1c1c1c;padding:20px;text-align:center;border-radius:8px 8px 0 0;">
+        <h2 style="color:#c8a85b;margin:0;font-size:22px;letter-spacing:1px;">LEAN IN COACHING</h2>
+        <p style="color:#ffffff;margin:5px 0 0 0;font-size:14px;">Leadership Reset Diagnostic</p>
+      </div>
+
+      <div style="padding:25px 15px;">
+        <h3 style="color:#dc2626;margin-top:0;">Discussion Slot Cancelled</h3>
+        <p style="font-size:15px;color:#374151;">Hi ${nameCapitalized},</p>
+        <p style="font-size:14px;color:#4b5563;">
+          Your 20 mins discussion slot with <strong>Lorraine Burns</strong> scheduled for <strong>${scheduledDate}</strong> at <strong>${scheduledTime}</strong> has been <strong>cancelled</strong>.
+        </p>
+
+        <p style="font-size:14px;color:#4b5563;">
+          If you would like to schedule a new discussion slot at your convenience, you can click the button below:
+        </p>
+
+    
+
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:25px 0;">
+
+        <p style="font-size:12px;color:#6b7280;margin:0;">
+          If you have any questions, please reach out to us at <a href="https://www.leanin-coaching.com/" style="color:#1f4e79;">https://www.leanin-coaching.com/</a>.
+        </p>
+
+        <p style="margin:16px 0 0 0;font-size:14px;color:#374151;">Warm regards,<br><strong>Lean In Coaching Team</strong></p>
+      </div>
+    </div>
+  `;
+
+  return await sendViaGraph(to, subject, html, []);
+
+}
+
+async function sendCancellationAdminEmail(payload) {
+
+  const adminRecipient = ADMIN_EMAIL || "suneel.kumar@solventek.com";
+
+  const name = String(payload?.respondent || payload?.firstName || "Participant").trim();
+  const email = String(payload?.email || "").trim();
+  const scheduledDate = payload?.scheduledDate || "-";
+  const scheduledTime = payload?.scheduledTime || "-";
+  const timeZone = payload?.timeZone || "India,Asia/Kolkata";
+
+  const subject = `[CANCELLED] Discussion Slot Cancelled - ${name}`;
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;line-height:1.7;padding:20px;max-width:640px;">
+      <h2 style="margin:0;color:#dc2626;">Discussion Slot Cancelled</h2>
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0;">
+
+      <p style="margin:0 0 12px 0;font-size:15px;">
+        <strong>${name}</strong> (<a href="mailto:${email}">${email}</a>) has <strong>cancelled</strong> their discussion slot.
+      </p>
+
+      <div style="background-color:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:16px 20px;margin:16px 0;">
+        <h4 style="margin:0 0 10px 0;color:#334155;font-size:14px;text-transform:uppercase;letter-spacing:0.5px;">Cancelled Slot Details</h4>
+        <table style="width:100%;font-size:14px;border-collapse:collapse;">
+          <tr>
+            <td style="padding:4px 0;font-weight:bold;color:#64748b;width:120px;">Date:</td>
+            <td style="padding:4px 0;font-weight:bold;color:#0f172a;">${scheduledDate}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;font-weight:bold;color:#64748b;">Time:</td>
+            <td style="padding:4px 0;font-weight:bold;color:#dc2626;">${scheduledTime}</td>
+          </tr>
+          <tr>
+            <td style="padding:4px 0;font-weight:bold;color:#64748b;">Time Zone:</td>
+            <td style="padding:4px 0;">${timeZone}</td>
+          </tr>
+        </table>
+      </div>
+
+      <p style="font-size:12px;color:#6b7280;margin:20px 0 0 0;">
+        This is an automated notification from the <strong>Leadership Assessment System</strong>.
+      </p>
+    </div>
+  `;
+
+  return await sendViaGraph(adminRecipient, subject, html, []);
+}
+
+module.exports = {
+  sendAssessmentResultEmail,
+  sendDraftReminderEmail,
+  renderAdminNotificationHtml,
+  sendAdminNotificationEmail,
+  sendCancellationUserEmail,
+  sendCancellationAdminEmail,
+};
