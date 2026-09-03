@@ -1,6 +1,6 @@
 const express = require("express");
 const { optionalAuth } = require("../middleware/authMiddleware");
-const {	saveDraft,savePublicDraft,getDraft,getPublicDraft,deleteDraft,submitAssessment,	getSubmissionStatus,getSubmissions,	deleteSubmission,deletePublicDraft,cancelBooking} = require("../controllers/sheetController");
+const {	saveDraft,savePublicDraft,getDraft,getPublicDraft,deleteDraft,submitAssessment,	getSubmissionStatus,getSubmissions,	deleteSubmission,reactivateSubmission,deletePublicDraft,cancelBooking} = require("../controllers/sheetController");
 const router = express.Router();
 
 const { getAvailableAndBookedSlots } = require("../utils/slotService");
@@ -34,5 +34,6 @@ router.post("/submit", optionalAuth, submitAssessment);
 router.get("/submission-status", require("../middleware/authMiddleware").authMiddleware, getSubmissionStatus);
 router.get("/submissions", require("../middleware/authMiddleware").authMiddleware, getSubmissions);
 router.delete("/submissions/:id", require("../middleware/authMiddleware").authMiddleware, deleteSubmission);
+router.put("/submissions/:id/reactivate", require("../middleware/authMiddleware").authMiddleware, reactivateSubmission);
 
 module.exports = router;

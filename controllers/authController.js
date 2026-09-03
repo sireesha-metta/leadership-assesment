@@ -96,7 +96,7 @@ async function hasAssessmentSubmissionForIdentity({ respondentId, email }) {
   // 1. Check assessment_submissions table by respondent_id
   if (Number.isFinite(normalizedRespondentId) && normalizedRespondentId > 0) {
     const [rows] = await db.execute(
-      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? ORDER BY id DESC LIMIT 1`,
+      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? AND (status IS NULL OR status != 'Inactive') ORDER BY id DESC LIMIT 1`,
       [normalizedRespondentId, "leadership_reset"]
     );
     if (rows.length > 0) {
@@ -110,7 +110,7 @@ async function hasAssessmentSubmissionForIdentity({ respondentId, email }) {
   // 2. Check assessment_submissions table by email
   if (normalizedEmail) {
     const [rows] = await db.execute(
-      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? ORDER BY id DESC LIMIT 1`,
+      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? AND (status IS NULL OR status != 'Inactive') ORDER BY id DESC LIMIT 1`,
       ["leadership_reset", normalizedEmail]
     );
     if (rows.length > 0) {
@@ -118,39 +118,6 @@ async function hasAssessmentSubmissionForIdentity({ respondentId, email }) {
         submitted_at: rows[0].submitted_at || rows[0].created_at,
         created_at: rows[0].created_at,
       };
-    }
-  }
-
-  // 3. Fallback: Check assessment_drafts table by email
-  if (normalizedEmail) {
-    try {
-      const [draftRows] = await db.execute(
-        `SELECT id, saved_at, updated_at, created_at FROM assessment_drafts WHERE LOWER(TRIM(email)) = ? ORDER BY id DESC LIMIT 1`,
-        [normalizedEmail]
-      );
-      if (draftRows.length > 0) {
-        return {
-          submitted_at: draftRows[0].saved_at || draftRows[0].updated_at || draftRows[0].created_at,
-          created_at: draftRows[0].created_at,
-        };
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  // 4. Fallback: Check Respondent table by email
-  if (normalizedEmail) {
-    try {
-      const existingByEmail = await findRespondentByEmail(normalizedEmail);
-      if (existingByEmail) {
-        return {
-          submitted_at: existingByEmail.created_at || existingByEmail.updated_at || new Date().toISOString(),
-          created_at: existingByEmail.created_at,
-        };
-      }
-    } catch (e) {
-      // ignore
     }
   }
 
@@ -274,8 +241,23 @@ async function updateUserByRoleAndId(role, id, payload) {
   }
 
   if (payload.status !== undefined) {
+    const newStatus = normalizeStatus(payload.status);
     fields.push("status = ?");
-    values.push(normalizeStatus(payload.status));
+    values.push(newStatus);
+
+    try {
+      const [userRows] = await db.execute(`SELECT * FROM Respondent WHERE id = ?`, [Number(id)]);
+      if (userRows.length > 0) {
+        const decryptedUser = toDecryptedRespondent(userRows[0]);
+        const userEmail = String(decryptedUser.email || "").trim().toLowerCase();
+        await db.execute(
+          `UPDATE assessment_submissions SET status = ? WHERE respondent_id = ? OR LOWER(TRIM(email)) = ?`,
+          [newStatus, Number(id), userEmail]
+        );
+      }
+    } catch (e) {
+      console.error("Failed to sync submission status on respondent status update:", e);
+    }
   }
 
   if (fields.length === 0) {
@@ -369,8 +351,25 @@ async function compareAndUpgradePassword(userId, storedPassword, candidatePasswo
 }
 
 async function deleteUserByRoleAndId(role, id) {
+  const normRole = normalizeRole(role);
+  if (normRole === "RESPONDENT") {
+    try {
+      const [userRows] = await db.execute(`SELECT * FROM Respondent WHERE id = ?`, [Number(id)]);
+      if (userRows.length > 0) {
+        const decryptedUser = toDecryptedRespondent(userRows[0]);
+        const userEmail = String(decryptedUser.email || "").trim().toLowerCase();
+        await db.execute(
+          `UPDATE assessment_submissions SET status = 'Inactive' WHERE respondent_id = ? OR LOWER(TRIM(email)) = ?`,
+          [Number(id), userEmail]
+        );
+      }
+    } catch (e) {
+      console.error("Failed to sync submission status on respondent delete:", e);
+    }
+  }
+
   const [result] = await db.execute(
-    "DELETE FROM Respondent WHERE id = ? AND role = ?",
+    "UPDATE Respondent SET status = 'Inactive' WHERE id = ? AND role = ?",
     [Number(id), role]
   );
 

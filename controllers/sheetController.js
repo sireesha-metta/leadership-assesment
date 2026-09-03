@@ -183,6 +183,11 @@ async function ensureSubmissionsTable() {
   if (respondentIdColumns.length > 0 && respondentIdColumns[0].Null === 'NO') {
     await db.execute(`ALTER TABLE assessment_submissions MODIFY respondent_id BIGINT UNSIGNED NULL`);
   }
+
+  const [statusColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'status'`);
+  if (statusColumns.length === 0) {
+    await db.execute(`ALTER TABLE assessment_submissions ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'Active'`);
+  }
 }
 
 async function getSubmissionRecordByRespondentId(respondentId) {
@@ -191,7 +196,7 @@ async function getSubmissionRecordByRespondentId(respondentId) {
   const [rows] = await db.execute(
     `SELECT respondent_name, submitted_at, total_score, total_weighted_score, submission_payload
      FROM assessment_submissions
-     WHERE respondent_id = ? AND assessment_type = ?
+     WHERE respondent_id = ? AND assessment_type = ? AND (status IS NULL OR status != 'Inactive')
      LIMIT 1`,
     [respondentId, ASSESSMENT_TYPE]
   );
@@ -325,7 +330,7 @@ async function findExistingAssessmentSubmission({ respondentId, email }) {
     const [rows] = await db.execute(
       `SELECT id, respondent_id, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload, created_at
        FROM assessment_submissions
-       WHERE respondent_id = ? AND assessment_type = ?
+       WHERE respondent_id = ? AND assessment_type = ? AND (status IS NULL OR status != 'Inactive')
        LIMIT 1`,
       [normalizedRespondentId, ASSESSMENT_TYPE]
     );
@@ -344,7 +349,7 @@ async function findExistingAssessmentSubmission({ respondentId, email }) {
   const [rows] = await db.execute(
     `SELECT id, respondent_id, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload, created_at
      FROM assessment_submissions
-     WHERE assessment_type = ? AND LOWER(TRIM(email)) = ?
+     WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? AND (status IS NULL OR status != 'Inactive')
      LIMIT 1`,
     [ASSESSMENT_TYPE, normalizedEmail]
   );
@@ -528,8 +533,35 @@ async function findBestScoresForEmail(email) {
 async function fetchSubmissionsFromDatabase() {
   await ensureSubmissionsTable();
 
+  const respondentMapById = new Map();
+  const respondentMapByEmail = new Map();
+  const respondentMapByName = new Map();
+
+  try {
+    const { toDecryptedRespondent } = require("../utils/dataSecurity");
+    const [respondentRows] = await db.execute(
+      `SELECT id, firstname, lastname, email, status FROM Respondent`
+    );
+    for (const rRow of respondentRows) {
+      const decrypted = toDecryptedRespondent(rRow);
+      const status = String(decrypted.status || "").trim().toLowerCase() === "inactive" ? "Inactive" : "Active";
+      if (decrypted.id) {
+        respondentMapById.set(Number(decrypted.id), status);
+      }
+      if (decrypted.email) {
+        respondentMapByEmail.set(String(decrypted.email).trim().toLowerCase(), status);
+      }
+      const fullName = `${String(decrypted.firstname || "").trim()} ${String(decrypted.lastname || "").trim()}`.trim().toLowerCase();
+      if (fullName) {
+        respondentMapByName.set(fullName, status);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load respondent statuses for submissions:", err);
+  }
+
   const [rows] = await db.execute(
-    `SELECT id, respondent_id, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload, created_at
+    `SELECT id, respondent_id, respondent_name, email, status, submitted_at, total_score, total_weighted_score, submission_payload, created_at
      FROM assessment_submissions
      ORDER BY submitted_at DESC, id DESC`
   );
@@ -554,6 +586,21 @@ async function fetchSubmissionsFromDatabase() {
         }
       }
     }
+
+    let respondentStatus = "Active";
+    const rawSubStatus = String(r.status || "Active").trim();
+    if (rawSubStatus.toLowerCase() === "inactive") {
+      respondentStatus = "Inactive";
+    } else if (norm.respondentId && respondentMapById.has(Number(norm.respondentId))) {
+      respondentStatus = respondentMapById.get(Number(norm.respondentId));
+    } else if (norm.email && respondentMapByEmail.has(String(norm.email).trim().toLowerCase())) {
+      respondentStatus = respondentMapByEmail.get(String(norm.email).trim().toLowerCase());
+    } else if (norm.respondent && respondentMapByName.has(String(norm.respondent).trim().toLowerCase())) {
+      respondentStatus = respondentMapByName.get(String(norm.respondent).trim().toLowerCase());
+    }
+    norm.respondentStatus = respondentStatus;
+    norm.status = rawSubStatus;
+
     result.push(norm);
   }
 
@@ -563,12 +610,63 @@ async function fetchSubmissionsFromDatabase() {
 async function deleteSubmissionById(id) {
   await ensureSubmissionsTable();
 
-  const [result] = await db.execute(
-    `DELETE FROM assessment_submissions WHERE id = ?`,
+  const [subRows] = await db.execute(
+    `SELECT respondent_id, email FROM assessment_submissions WHERE id = ?`,
     [id]
   );
 
+  const [result] = await db.execute(
+    `UPDATE assessment_submissions SET status = 'Inactive' WHERE id = ?`,
+    [id]
+  );
+
+  if (subRows.length > 0) {
+    const { respondent_id, email } = subRows[0];
+    const { hashIdentifier } = require("../utils/dataSecurity");
+
+    if (respondent_id) {
+      await db.execute(`UPDATE Respondent SET status = 'Inactive' WHERE id = ?`, [respondent_id]);
+    }
+    if (email) {
+      const emailHash = hashIdentifier(String(email).trim().toLowerCase());
+      if (emailHash) {
+        await db.execute(`UPDATE Respondent SET status = 'Inactive' WHERE email_hash = ?`, [emailHash]);
+      }
+    }
+  }
+
   return { deleted: Number(result?.affectedRows || 0) > 0 };
+}
+
+async function reactivateSubmissionById(id) {
+  await ensureSubmissionsTable();
+
+  const [subRows] = await db.execute(
+    `SELECT respondent_id, email FROM assessment_submissions WHERE id = ?`,
+    [id]
+  );
+
+  const [result] = await db.execute(
+    `UPDATE assessment_submissions SET status = 'Active' WHERE id = ?`,
+    [id]
+  );
+
+  if (subRows.length > 0) {
+    const { respondent_id, email } = subRows[0];
+    const { hashIdentifier } = require("../utils/dataSecurity");
+
+    if (respondent_id) {
+      await db.execute(`UPDATE Respondent SET status = 'Active' WHERE id = ?`, [respondent_id]);
+    }
+    if (email) {
+      const emailHash = hashIdentifier(String(email).trim().toLowerCase());
+      if (emailHash) {
+        await db.execute(`UPDATE Respondent SET status = 'Active' WHERE email_hash = ?`, [emailHash]);
+      }
+    }
+  }
+
+  return { reactivated: Number(result?.affectedRows || 0) > 0 };
 }
 
 exports.saveDraft = async (req, res) => {
@@ -1028,13 +1126,39 @@ exports.deleteSubmission = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Submission deleted.",
+      message: "Submission marked as inactive.",
     });
   } catch (error) {
     console.error(error);
     return res.status(500).json({
       success: false,
-      message: "Failed to delete submission.",
+      message: "Failed to update submission status.",
+      details: error.message,
+    });
+  }
+};
+
+exports.reactivateSubmission = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid submission id." });
+    }
+
+    const result = await reactivateSubmissionById(id);
+    if (!result.reactivated) {
+      return res.status(404).json({ success: false, message: "Submission not found." });
+    }
+
+    return res.json({
+      success: true,
+      message: "Submission reactivated.",
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to reactivate submission.",
       details: error.message,
     });
   }
