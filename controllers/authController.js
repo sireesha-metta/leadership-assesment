@@ -569,80 +569,35 @@ exports.upsertAssessmentRespondent = async (req, res) => {
       });
     }
 
-    const alreadyCompleted = await hasAssessmentSubmissionForIdentity({
-      respondentId: existingRespondentId,
-      email: normalizedEmail,
-    });
-
-    if (alreadyCompleted) {
-      const existing = existingByEmail ? toDecryptedRespondent(existingByEmail) : {};
-      const submittedAt = alreadyCompleted.submitted_at || alreadyCompleted.created_at || new Date().toISOString();
-      return res.status(409).json({
-        success: false,
-        alreadySubmitted: true,
-        message: "Assessment already submitted. Assignment already done.",
-        data: {
-          id: existing.id ? Number(existing.id) : null,
-          firstName: String(existing.firstname || "").trim(),
-          lastName: String(existing.lastname || "").trim(),
-          email: normalizedEmail,
-          mobile: String(existing.mobile || "").trim(),
-          submittedAt,
-        },
-      });
-    }
-
     if (existingByEmail) {
       const existing = toDecryptedRespondent(existingByEmail);
 
       const existingFirstName = String(existing.firstname || "").trim();
       const existingLastName = String(existing.lastname || "").trim();
       const existingMobile = normalizeMobileDigits(existing.mobile);
-      const existingStatus = normalizeStatus(existing.status);
-
-      const isSameRecord =
-        existingFirstName === normalizedFirstName &&
-        existingLastName === normalizedLastName &&
-        existingMobile === normalizedMobile &&
-        existingStatus === "Active";
-
-      if (isSameRecord) {
-        return res.json({
-          success: true,
-          message: "Respondent already up to date.",
-          data: {
-            id: Number(existing.id),
-            firstname: existingFirstName,
-            lastname: existingLastName,
-            email: normalizedEmail,
-            mobile: existingMobile,
-            role: normalizeRole(existing.role),
-          },
-        });
-      }
 
       await db.execute(
         `UPDATE Respondent
          SET firstname = ?, lastname = ?, mobile = ?, mobile_hash = ?, status = 'Active'
          WHERE id = ?`,
         [
-          protectRespondentFields({ firstName: normalizedFirstName }).firstname,
-          protectRespondentFields({ lastName: normalizedLastName }).lastname,
-          protectRespondentFields({ mobile: normalizedMobile }).mobile,
-          protectRespondentFields({ mobile: normalizedMobile }).mobile_hash,
+          protectRespondentFields({ firstName: normalizedFirstName || existingFirstName }).firstname,
+          protectRespondentFields({ lastName: normalizedLastName || existingLastName }).lastname,
+          protectRespondentFields({ mobile: normalizedMobile || existingMobile }).mobile,
+          hashMobileIdentifier(normalizedMobile || existingMobile),
           Number(existing.id),
         ]
       );
 
       return res.json({
         success: true,
-        message: "Respondent details saved.",
+        message: "Respondent details updated.",
         data: {
           id: Number(existing.id),
-          firstname: normalizedFirstName,
-          lastname: normalizedLastName,
+          firstName: normalizedFirstName || existingFirstName,
+          lastName: normalizedLastName || existingLastName,
           email: normalizedEmail,
-          mobile: normalizedMobile,
+          mobile: normalizedMobile || existingMobile,
           role: normalizeRole(existing.role),
         },
       });

@@ -1,12 +1,3 @@
-/**
- * Tab 3 Scoring Engine for Leadership Reset Diagnostic
- * 
- * Category Max Ceilings:
- * - Decision Making (Q1-Q4): 28 pts
- * - Conversation Patterns (Q5-Q8): 28 pts
- * - Leader Signals (Q9-Q12): 35 pts
- * - Overall Ceiling: 91 pts
- */
 
 const CATEGORY_MAXES = {
   "Decision Making": 28,
@@ -14,27 +5,21 @@ const CATEGORY_MAXES = {
   "Leader Signals": 35,
 };
 
-const CATEGORY_PRIORITY = {
-  "Decision Making": 1,
-  "Conversation Patterns": 2,
-  "Leader Signals": 3,
-};
-
 const ACTION_GRID = {
   Green: {
-    "Decision Making": "Maintain open decision channels and ensure diverse voices continue leading discussions early.",
-    "Conversation Patterns": "Sustain psychological safety so team members freely challenge initial proposals in meetings.",
-    "Leader Signals": "Keep holding back early signals to allow uninhibited exploration of ideas from subject matter experts.",
+    "Decision Making": "Next time a decision is being made, notice who speaks first — try waiting until at least two others have spoken before you weigh in.",
+    "Conversation Patterns": "Pick one meeting this week and watch who challenges. If it's usually the same one or two people, invite a specific quieter voice to respond first.",
+    "Leader Signals": "Before your next big decision, hold back your own view a beat longer than usual and see whether the room's thinking shifts.",
   },
   Amber: {
-    "Decision Making": "Establish structured turn-taking to prevent senior or dominant voices from steering choices prematurely.",
-    "Conversation Patterns": "Actively invite pushback during meetings to surface unspoken concerns before decisions close.",
-    "Leader Signals": "Intentionally pause before stating your own view so knowledgeable team members speak up first.",
+    "Decision Making": "In your next leadership meeting, deliberately vary who speaks first on the agenda — rotate it away from the usual senior voice.",
+    "Conversation Patterns": "After your next meeting, ask one person directly: \"was there anything you didn't say in there that you'd say to me privately?\"",
+    "Leader Signals": "Run your next complex decision with a round where everyone states their view in writing before you share yours.",
   },
   Red: {
-    "Decision Making": "Re-evaluate decision velocity and explicitly assign rotation for who leads topic discussions.",
-    "Conversation Patterns": "Address off-limits topics and corridor talk by building dedicated psychological safety protocols.",
-    "Leader Signals": "Systematically hold back early leadership signals to break team convergence habits.",
+    "Decision Making": "For your next three decisions, ask the most junior or newest voice in the room to speak first, before anyone senior weighs in.",
+    "Conversation Patterns": "Name it directly in your next meeting: \"I want to hear disagreement today — if something feels risky to say, say it anyway.\"",
+    "Leader Signals": "Before your next meeting, write down your own view and put it aside. Don't share it until everyone else has spoken.",
   },
 };
 
@@ -49,22 +34,17 @@ function computeTab3Scoring(questionResponses = []) {
   let cpScore = 0;
   let lsScore = 0;
 
-  questionResponses.forEach((q) => {
-    const section = q.section ? q.section.toUpperCase() : "";
+  questionResponses.forEach((q, idx) => {
+    const section = String(q.section || "").toUpperCase();
+    const rIdx = Number(q.rowIndex);
     const wScore = Number(q.weightedScore || 0);
 
-    if (section.includes("DECISION")) {
+    if (section.includes("DECISION") || (rIdx >= 6 && rIdx <= 9) || (idx < 4 && rIdx < 12)) {
       dmScore += wScore;
-    } else if (section.includes("CONVERSATION")) {
+    } else if (section.includes("CONVERSATION") || (rIdx >= 12 && rIdx <= 15) || (idx >= 4 && idx < 8)) {
       cpScore += wScore;
-    } else if (section.includes("LEADER")) {
+    } else if (section.includes("LEADER") || (rIdx >= 18 && rIdx <= 21) || idx >= 8) {
       lsScore += wScore;
-    } else {
-      // Fallback by row index if section string missing
-      const rIdx = Number(q.rowIndex);
-      if (rIdx >= 6 && rIdx <= 9) dmScore += wScore;
-      else if (rIdx >= 12 && rIdx <= 15) cpScore += wScore;
-      else if (rIdx >= 18 && rIdx <= 21) lsScore += wScore;
     }
   });
 
@@ -93,7 +73,7 @@ function computeTab3Scoring(questionResponses = []) {
     if (a.pct !== b.pct) {
       return a.pct - b.pct;
     }
-    // Tie-break rule: lower priority number chosen first (Decision Making > Conversation Patterns > Leader Signals)
+   
     return a.priority - b.priority;
   });
 

@@ -28,7 +28,7 @@ async function ensureDraftReminderColumns() {
 }
 
 async function fetchPendingDraftReminders(afterHours, batchSize, maxAttempts) {
-  const safeAfterHours = toPositiveInt(afterHours, 8);
+  const safeAfterHours = toPositiveInt(afterHours, 4);
   const safeBatchSize = toPositiveInt(batchSize, 100);
   const safeMaxAttempts = toPositiveInt(maxAttempts, 1);
 
@@ -134,7 +134,7 @@ async function runDraftReminderCycle(options = {}) {
     };
   }
 
-  const afterHours = toPositiveInt(process.env.DRAFT_REMINDER_AFTER_HOURS, 8);
+  const afterHours = toPositiveInt(process.env.DRAFT_REMINDER_AFTER_HOURS, 4);
   const batchSize = toPositiveInt(process.env.DRAFT_REMINDER_BATCH_SIZE, 100);
   const maxAttempts = toPositiveInt(process.env.DRAFT_REMINDER_MAX_ATTEMPTS, 1);
   let currentStep = "initialization";
@@ -144,6 +144,9 @@ async function runDraftReminderCycle(options = {}) {
   try {
     currentStep = "ensure columns";
     await ensureDraftReminderColumns();
+
+    currentStep = "delete expired drafts";
+    await deleteExpiredDrafts();
 
     currentStep = "fetch pending reminders";
     const pendingRows = await fetchPendingDraftReminders(afterHours, batchSize, maxAttempts);
@@ -191,17 +194,6 @@ async function runDraftReminderCycle(options = {}) {
       success: true,
       skipped: false,
       reason: null,
-      processed: pendingRows.length,
-      sent: sentCount,
-      failed: failedCount,
-    };
-
-    currentStep = "delete expired drafts";
-    await deleteExpiredDrafts();
-
-    return {
-      success: true,
-      skipped: false,
       processed: pendingRows.length,
       sent: sentCount,
       failed: failedCount,

@@ -905,17 +905,15 @@ exports.submitAssessment = async (req, res) => {
       email: normalizedPayload.email,
     });
 
-    const isReschedule = Boolean(req.body?.isReschedule || req.body?.bookingDetails?.isReschedule || existingSubmission);
-
     const incomingValidCount = countNonEmptyAnswers(normalizedPayload.answersByRow, normalizedPayload.questionResponses);
 
-    if (isReschedule || incomingValidCount === 0) {
+    const isReschedule = Boolean(req.body?.isReschedule || req.body?.bookingDetails?.isReschedule) || (Boolean(existingSubmission) && incomingValidCount === 0);
+
+    if (incomingValidCount === 0) {
       const best = await findBestScoresForEmail(normalizedPayload.email);
       if (best) {
-        if (incomingValidCount === 0) {
-          normalizedPayload.answersByRow = best.answersByRow;
-          normalizedPayload.questionResponses = buildCompleteQuestionResponses(best.questionResponses, best.answersByRow);
-        }
+        normalizedPayload.answersByRow = best.answersByRow;
+        normalizedPayload.questionResponses = buildCompleteQuestionResponses(best.questionResponses, best.answersByRow);
         if (normalizedPayload.totalScore === 0 && best.totalScore > 0) {
           normalizedPayload.totalScore = best.totalScore;
           normalizedPayload.totalWeightedScore = best.totalWeightedScore;
