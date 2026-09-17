@@ -4,6 +4,15 @@ const UPSTREAM_TIMEOUT_MS = Number(process.env.GOOGLE_SCRIPT_TIMEOUT_MS || 30000
 const UPSTREAM_RETRY_COUNT = Number(process.env.GOOGLE_SCRIPT_RETRY_COUNT || 1);
 const db = require("../config/db");
 const { sendAssessmentResultEmail, sendAdminNotificationEmail } = require("../utils/mailer");
+const { computeTab3Scoring } = require("../utils/scoring");
+const {
+  getById,
+  getActiveById,
+  getByEmail,
+  formatFullName,
+} = require("../repositories/respondentRepository");
+const { toDecryptedRespondent } = require("../utils/dataSecurity");
+
 const ASSESSMENT_TYPE = "leadership_reset";
 
 const ROW_TO_QKEY = {
@@ -23,13 +32,19 @@ const ROW_TO_QKEY = {
 
 const QUESTION_ROWS = [6, 7, 8, 9, 12, 13, 14, 15, 18, 19, 20, 21];
 
-function buildScriptPayload(input) {
+function buildScriptPayload(input, canonicalRespondent) {
+  const firstName = canonicalRespondent?.firstname || input.firstName || "";
+  const lastName = canonicalRespondent?.lastname || input.lastName || "";
+  const respondentName = formatFullName(firstName, lastName) || input.respondent || "";
+  const email = canonicalRespondent?.email || input.email || "";
+  const respondentId = Number(canonicalRespondent?.id || input.respondentId || 0);
+
   const payload = {
-    respondent: String(input.respondent),
-    firstName: String(input.firstName || "").trim(),
-    lastName: String(input.lastName || "").trim(),
-    email: String(input.email || "").trim(),
-    respondentId: Number(input.respondentId || 0),
+    respondent: respondentName,
+    firstName: String(firstName).trim(),
+    lastName: String(lastName).trim(),
+    email: String(email).trim(),
+    respondentId,
     submittedAt: input.submittedAt || new Date().toISOString(),
     mode: "template-update",
     totalScore: Number(input.totalScore || 0),
@@ -104,21 +119,6 @@ function parseTextResult(rawText) {
 
 function normalizeDraftPayload(input) {
   return {
-    respondent: String(input.respondent),
-    savedAt: input.savedAt || new Date().toISOString(),
-    answersByRow: { ...(input.answersByRow || {}) },
-    answeredCount: Number(input.answeredCount || 0),
-    totalQuestions: Number(input.totalQuestions || 0),
-    totalScore: Number(input.totalScore || 0),
-    totalWeightedScore: Number(input.totalWeightedScore || 0),
-    questionResponses: Array.isArray(input.questionResponses) ? input.questionResponses : [],
-  };
-}
-
-function normalizePublicDraftPayload(input) {
-  return {
-    respondentId: Number(input.respondentId || 0),
-    respondent: String(input.respondent),
     savedAt: input.savedAt || new Date().toISOString(),
     answersByRow: { ...(input.answersByRow || {}) },
     answeredCount: Number(input.answeredCount || 0),
@@ -130,16 +130,7 @@ function normalizePublicDraftPayload(input) {
 }
 
 function normalizeSubmissionPayload(input) {
-  const firstName = String(input.firstName || "").trim();
-  const lastName = String(input.lastName || "").trim();
-  const respondentName = String(input.respondent || `${firstName} ${lastName}`.trim()).trim();
-
   return {
-    respondent: respondentName,
-    firstName,
-    lastName,
-    email: String(input.email || "").trim(),
-    respondentId: Number(input.respondentId || 0),
     submittedAt: input.submittedAt || new Date().toISOString(),
     totalScore: Number(input.totalScore || 0),
     totalWeightedScore: Number(input.totalWeightedScore || 0),
@@ -153,52 +144,61 @@ async function ensureSubmissionsTable() {
   await db.execute(
     `CREATE TABLE IF NOT EXISTS assessment_submissions (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-      respondent_id BIGINT UNSIGNED NULL,
+      respondent_id INT NOT NULL,
       assessment_type VARCHAR(80) NOT NULL,
-      respondent_name VARCHAR(255) NULL,
-      email VARCHAR(255) NULL,
       submitted_at DATETIME NULL,
       total_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
       total_weighted_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
       submission_payload LONGTEXT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      status VARCHAR(20) NOT NULL DEFAULT 'Active',
       PRIMARY KEY (id),
       KEY idx_submission_respondent_type (respondent_id, assessment_type),
-      KEY idx_submission_email (email),
       KEY idx_submission_created_at (created_at)
     )`
   );
 
-  const [emailColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'email'`);
-  if (emailColumns.length === 0) {
-    await db.execute(`ALTER TABLE assessment_submissions ADD COLUMN email VARCHAR(255) NULL`);
+  const [nameCols] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'respondent_name'`);
+  if (nameCols.length > 0) {
+    await db.execute(`ALTER TABLE assessment_submissions DROP COLUMN respondent_name`);
   }
 
-  const [mobileColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'mobile'`);
-  if (mobileColumns.length > 0) {
+  const [emailCols] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'email'`);
+  if (emailCols.length > 0) {
+    await db.execute(`ALTER TABLE assessment_submissions DROP COLUMN email`);
+  }
+
+  const [mobileCols] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'mobile'`);
+  if (mobileCols.length > 0) {
     await db.execute(`ALTER TABLE assessment_submissions DROP COLUMN mobile`);
-  }
-
-  const [respondentIdColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'respondent_id'`);
-  if (respondentIdColumns.length > 0 && respondentIdColumns[0].Null === 'NO') {
-    await db.execute(`ALTER TABLE assessment_submissions MODIFY respondent_id BIGINT UNSIGNED NULL`);
-  }
-
-  const [statusColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'status'`);
-  if (statusColumns.length === 0) {
-    await db.execute(`ALTER TABLE assessment_submissions ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'Active'`);
   }
 }
 
 async function getSubmissionRecordByRespondentId(respondentId) {
   await ensureSubmissionsTable();
 
+  const numId = Number(respondentId);
+  if (!Number.isFinite(numId) || numId <= 0) return null;
+
   const [rows] = await db.execute(
-    `SELECT respondent_name, submitted_at, total_score, total_weighted_score, submission_payload
-     FROM assessment_submissions
-     WHERE respondent_id = ? AND assessment_type = ? AND (status IS NULL OR status != 'Inactive')
+    `SELECT
+       s.id,
+       s.respondent_id,
+       s.submitted_at,
+       s.total_score,
+       s.total_weighted_score,
+       s.submission_payload,
+       s.status AS submission_status,
+       r.firstname,
+       r.lastname,
+       r.email,
+       r.mobile,
+       r.status AS respondent_status
+     FROM assessment_submissions s
+     JOIN respondent r ON r.id = s.respondent_id AND r.status = 'Active'
+     WHERE s.respondent_id = ? AND s.assessment_type = ? AND (s.status IS NULL OR s.status != 'Inactive')
      LIMIT 1`,
-    [respondentId, ASSESSMENT_TYPE]
+    [numId, ASSESSMENT_TYPE]
   );
 
   if (rows.length === 0) {
@@ -206,8 +206,10 @@ async function getSubmissionRecordByRespondentId(respondentId) {
   }
 
   const row = rows[0];
-  let parsedPayload = null;
+  const pii = toDecryptedRespondent(row);
+  const fullName = formatFullName(pii.firstname, pii.lastname);
 
+  let parsedPayload = null;
   try {
     parsedPayload = typeof row.submission_payload === "string"
       ? JSON.parse(row.submission_payload)
@@ -217,38 +219,42 @@ async function getSubmissionRecordByRespondentId(respondentId) {
   }
 
   return {
-    respondent: String(parsedPayload?.respondent || row.respondent_name || "").trim(),
+    id: Number(row.id),
+    respondentId: Number(row.respondent_id),
+    respondent: fullName,
+    firstName: String(pii.firstname || "").trim(),
+    lastName: String(pii.lastname || "").trim(),
+    email: String(pii.email || "").trim().toLowerCase(),
+    mobile: String(pii.mobile || "").trim(),
     submittedAt: parsedPayload?.submittedAt || row.submitted_at || null,
     totalScore: Number(parsedPayload?.totalScore ?? row.total_score ?? 0),
     totalWeightedScore: Number(parsedPayload?.totalWeightedScore ?? row.total_weighted_score ?? 0),
     questionResponses: Array.isArray(parsedPayload?.questionResponses) ? parsedPayload.questionResponses : [],
     answersByRow: parsedPayload?.answersByRow || {},
+    bookingDetails: parsedPayload?.bookingDetails || null,
   };
 }
 
 async function saveSubmissionRecord(respondentId, payload) {
   await ensureSubmissionsTable();
 
-  const normalizedEmail = String(payload.email || "").trim().toLowerCase();
-  const normalizedRespondentId = Number(respondentId) > 0 ? respondentId : null;
-
-  let existingRow = null;
-  if (normalizedRespondentId) {
-    const [rows] = await db.execute(
-      `SELECT id, total_score, total_weighted_score, submission_payload FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? LIMIT 1`,
-      [normalizedRespondentId, ASSESSMENT_TYPE]
-    );
-    if (rows.length > 0) existingRow = rows[0];
-  }
-  if (!existingRow && normalizedEmail) {
-    const [rows] = await db.execute(
-      `SELECT id, total_score, total_weighted_score, submission_payload FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? LIMIT 1`,
-      [ASSESSMENT_TYPE, normalizedEmail]
-    );
-    if (rows.length > 0) existingRow = rows[0];
+  const numRespondentId = Number(respondentId);
+  if (!Number.isFinite(numRespondentId) || numRespondentId <= 0) {
+    throw new Error("A valid respondent_id is required to save assessment submission.");
   }
 
-  if (existingRow) {
+  const [existingRows] = await db.execute(
+    `SELECT id, total_score, total_weighted_score, submission_payload
+     FROM assessment_submissions
+     WHERE respondent_id = ? AND assessment_type = ?
+     LIMIT 1`,
+    [numRespondentId, ASSESSMENT_TYPE]
+  );
+
+  const cleanPayload = normalizeSubmissionPayload(payload);
+
+  if (existingRows.length > 0) {
+    const existingRow = existingRows[0];
     let existingPayload = {};
     try {
       existingPayload = typeof existingRow.submission_payload === "string"
@@ -256,45 +262,44 @@ async function saveSubmissionRecord(respondentId, payload) {
         : existingRow.submission_payload || {};
     } catch (e) {}
 
-    const incomingValidCount = countNonEmptyAnswers(payload.answersByRow, payload.questionResponses);
+    const incomingValidCount = countNonEmptyAnswers(cleanPayload.answersByRow, cleanPayload.questionResponses);
 
     const mergedAnswersByRow = (incomingValidCount > 0)
-      ? payload.answersByRow
+      ? cleanPayload.answersByRow
       : (existingPayload.answersByRow || {});
 
     const mergedQuestionResponses = (incomingValidCount > 0)
-      ? payload.questionResponses
+      ? cleanPayload.questionResponses
       : (existingPayload.questionResponses || []);
 
-    const mergedTotalScore = Number(payload.totalScore || 0) > 0
-      ? payload.totalScore
+    const mergedTotalScore = Number(cleanPayload.totalScore || 0) > 0
+      ? cleanPayload.totalScore
       : Number(existingRow.total_score || existingPayload.totalScore || 0);
 
-    const mergedWeightedScore = Number(payload.totalWeightedScore || 0) > 0
-      ? payload.totalWeightedScore
+    const mergedWeightedScore = Number(cleanPayload.totalWeightedScore || 0) > 0
+      ? cleanPayload.totalWeightedScore
       : Number(existingRow.total_weighted_score || existingPayload.totalWeightedScore || 0);
 
+    const mergedBookingDetails = cleanPayload.bookingDetails || existingPayload.bookingDetails || null;
+
     const mergedPayload = {
-      ...existingPayload,
-      ...payload,
+      submittedAt: cleanPayload.submittedAt || existingPayload.submittedAt || new Date().toISOString(),
       totalScore: mergedTotalScore,
       totalWeightedScore: mergedWeightedScore,
       answersByRow: mergedAnswersByRow,
       questionResponses: mergedQuestionResponses,
+      bookingDetails: mergedBookingDetails,
     };
 
     await db.execute(
       `UPDATE assessment_submissions
-       SET respondent_name = ?,
-           email = ?,
-           submitted_at = ?,
+       SET submitted_at = ?,
            total_score = ?,
            total_weighted_score = ?,
-           submission_payload = ?
+           submission_payload = ?,
+           status = 'Active'
        WHERE id = ?`,
       [
-        mergedPayload.respondent,
-        mergedPayload.email,
         mergedPayload.submittedAt,
         mergedTotalScore,
         mergedWeightedScore,
@@ -305,58 +310,67 @@ async function saveSubmissionRecord(respondentId, payload) {
   } else {
     await db.execute(
       `INSERT INTO assessment_submissions
-        (respondent_id, assessment_type, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (respondent_id, assessment_type, submitted_at, total_score, total_weighted_score, submission_payload, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'Active')`,
       [
-        normalizedRespondentId,
+        numRespondentId,
         ASSESSMENT_TYPE,
-        payload.respondent,
-        payload.email,
-        payload.submittedAt,
-        payload.totalScore,
-        payload.totalWeightedScore,
-        JSON.stringify(payload),
+        cleanPayload.submittedAt,
+        cleanPayload.totalScore,
+        cleanPayload.totalWeightedScore,
+        JSON.stringify(cleanPayload),
       ]
     );
   }
 }
 
 async function findExistingAssessmentSubmission({ respondentId, email }) {
-  const normalizedRespondentId = Number(respondentId);
-
   await ensureSubmissionsTable();
 
-  if (Number.isFinite(normalizedRespondentId) && normalizedRespondentId > 0) {
-    const [rows] = await db.execute(
-      `SELECT id, respondent_id, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload, created_at
-       FROM assessment_submissions
-       WHERE respondent_id = ? AND assessment_type = ? AND (status IS NULL OR status != 'Inactive')
-       LIMIT 1`,
-      [normalizedRespondentId, ASSESSMENT_TYPE]
-    );
+  let targetRespondentId = Number(respondentId);
 
-    if (rows.length > 0) {
-      return rows[0];
+  if ((!Number.isFinite(targetRespondentId) || targetRespondentId <= 0) && email) {
+    const canonical = await getByEmail(email);
+    if (canonical) {
+      targetRespondentId = canonical.id;
     }
   }
 
-  const normalizedEmail = String(email || "").trim().toLowerCase();
+  if (Number.isFinite(targetRespondentId) && targetRespondentId > 0) {
+    const [rows] = await db.execute(
+      `SELECT
+         s.id,
+         s.respondent_id,
+         s.submitted_at,
+         s.total_score,
+         s.total_weighted_score,
+         s.submission_payload,
+         s.created_at,
+         r.firstname,
+         r.lastname,
+         r.email,
+         r.mobile,
+         r.status AS respondent_status
+       FROM assessment_submissions s
+       JOIN respondent r ON r.id = s.respondent_id AND r.status = 'Active'
+       WHERE s.respondent_id = ? AND s.assessment_type = ? AND (s.status IS NULL OR s.status != 'Inactive')
+       LIMIT 1`,
+      [targetRespondentId, ASSESSMENT_TYPE]
+    );
 
-  if (!normalizedEmail) {
-    return null;
+    if (rows.length > 0) {
+      const row = rows[0];
+      const pii = toDecryptedRespondent(row);
+      return {
+        ...row,
+        respondent_name: formatFullName(pii.firstname, pii.lastname),
+        email: String(pii.email || "").trim().toLowerCase(),
+      };
+    }
   }
 
-  const [rows] = await db.execute(
-    `SELECT id, respondent_id, respondent_name, email, submitted_at, total_score, total_weighted_score, submission_payload, created_at
-     FROM assessment_submissions
-     WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? AND (status IS NULL OR status != 'Inactive')
-     LIMIT 1`,
-    [ASSESSMENT_TYPE, normalizedEmail]
-  );
-
-  return rows.length > 0 ? rows[0] : null;
+  return null;
 }
-
 
 const DEFAULT_QUESTIONS_LIST = [
   { rowIndex: 6, number: 1, question: "When your team discusses a decision, who typically speaks first?", weight: 2 },
@@ -430,6 +444,11 @@ function buildCompleteQuestionResponses(existingQuestionResponses, answersByRow)
 }
 
 function normalizeSubmissionRow(row) {
+  const pii = toDecryptedRespondent(row);
+  const fullName = formatFullName(pii.firstname, pii.lastname);
+  const email = String(pii.email || "").trim().toLowerCase();
+  const mobile = String(pii.mobile || "").trim();
+
   const payload = typeof row.submission_payload === "string"
     ? JSON.parse(row.submission_payload || "{}")
     : row.submission_payload || {};
@@ -440,9 +459,13 @@ function normalizeSubmissionRow(row) {
 
   return {
     id: Number(row.id),
-    source: Number(row.respondent_id) > 0 ? "internal" : "public",
-    respondent: String(payload.respondent || row.respondent_name).trim(),
-    email: String(row.email || payload.email || "").trim() || null,
+    respondentId: Number(row.respondent_id),
+    source: "internal",
+    respondent: fullName,
+    firstName: String(pii.firstname || "").trim(),
+    lastName: String(pii.lastname || "").trim(),
+    email,
+    mobile,
     submittedAt,
     timestamp,
     totalScore: Number(payload.totalScore ?? row.total_score ?? 0),
@@ -451,6 +474,8 @@ function normalizeSubmissionRow(row) {
     questions: fullQuestions,
     answersByRow: payload.answersByRow || {},
     createdAt: row.created_at,
+    status: row.submission_status || "Active",
+    respondentStatus: row.respondent_status || "Active",
   };
 }
 
@@ -471,147 +496,38 @@ function countNonEmptyAnswers(answersByRow, questionResponses) {
   return count;
 }
 
-async function findBestScoresForEmail(email) {
-  if (!email) return null;
-  const normalizedEmail = String(email).trim().toLowerCase();
-
-  const [rows] = await db.execute(
-    `SELECT total_score, total_weighted_score, submission_payload
-     FROM assessment_submissions
-     WHERE LOWER(TRIM(email)) = ?
-     ORDER BY id DESC`,
-    [normalizedEmail]
-  );
-
-  for (const row of rows) {
-    let payload = {};
-    try {
-      payload = typeof row.submission_payload === "string" ? JSON.parse(row.submission_payload) : row.submission_payload || {};
-    } catch (e) {}
-
-    const qResp = Array.isArray(payload.questionResponses) ? payload.questionResponses : [];
-    const aByRow = payload.answersByRow || {};
-    const validCount = countNonEmptyAnswers(aByRow, qResp);
-
-    if (validCount > 0) {
-      return {
-        totalScore: Number(row.total_score || payload.totalScore || 0),
-        totalWeightedScore: Number(row.total_weighted_score || payload.totalWeightedScore || 0),
-        answersByRow: aByRow,
-        questionResponses: qResp,
-      };
-    }
-  }
-
-  const [draftRows] = await db.execute(
-    `SELECT draft_payload FROM assessment_drafts
-     WHERE draft_payload LIKE ?
-     ORDER BY id DESC LIMIT 1`,
-    [`%${normalizedEmail}%`]
-  );
-
-  if (draftRows.length > 0) {
-    let dp = {};
-    try {
-      dp = typeof draftRows[0].draft_payload === "string" ? JSON.parse(draftRows[0].draft_payload) : draftRows[0].draft_payload || {};
-    } catch (e) {}
-
-    const validDraftCount = countNonEmptyAnswers(dp.answersByRow, dp.questionResponses);
-    if (validDraftCount > 0) {
-      return {
-        totalScore: Number(dp.totalScore || 0),
-        totalWeightedScore: Number(dp.totalWeightedScore || 0),
-        answersByRow: dp.answersByRow || {},
-        questionResponses: Array.isArray(dp.questionResponses) ? dp.questionResponses : [],
-      };
-    }
-  }
-
-  return null;
-}
-
 async function fetchSubmissionsFromDatabase() {
   await ensureSubmissionsTable();
 
-  const respondentMapById = new Map();
-  const respondentMapByEmail = new Map();
-  const respondentMapByName = new Map();
-
-  try {
-    const { toDecryptedRespondent } = require("../utils/dataSecurity");
-    const [respondentRows] = await db.execute(
-      `SELECT id, firstname, lastname, email, status FROM Respondent`
-    );
-    for (const rRow of respondentRows) {
-      const decrypted = toDecryptedRespondent(rRow);
-      const status = String(decrypted.status || "").trim().toLowerCase() === "inactive" ? "Inactive" : "Active";
-      if (decrypted.id) {
-        respondentMapById.set(Number(decrypted.id), status);
-      }
-      if (decrypted.email) {
-        respondentMapByEmail.set(String(decrypted.email).trim().toLowerCase(), status);
-      }
-      const fullName = `${String(decrypted.firstname || "").trim()} ${String(decrypted.lastname || "").trim()}`.trim().toLowerCase();
-      if (fullName) {
-        respondentMapByName.set(fullName, status);
-      }
-    }
-  } catch (err) {
-    console.error("Failed to load respondent statuses for submissions:", err);
-  }
-
   const [rows] = await db.execute(
-    `SELECT id, respondent_id, respondent_name, email, status, submitted_at, total_score, total_weighted_score, submission_payload, created_at
-     FROM assessment_submissions
-     ORDER BY submitted_at DESC, id DESC`
+    `SELECT
+       s.id,
+       s.respondent_id,
+       s.assessment_type,
+       s.status AS submission_status,
+       s.submitted_at,
+       s.total_score,
+       s.total_weighted_score,
+       s.submission_payload,
+       s.created_at,
+       r.firstname,
+       r.lastname,
+       r.email,
+       r.mobile,
+       r.status AS respondent_status
+     FROM assessment_submissions s
+     JOIN respondent r ON r.id = s.respondent_id
+     ORDER BY s.submitted_at DESC, s.id DESC`
   );
 
-  const result = [];
-  for (const r of rows) {
-    const norm = normalizeSubmissionRow(r);
-    const validCount = countNonEmptyAnswers(norm.answersByRow, norm.questionResponses);
-
-    if ((norm.totalScore === 0 || validCount === 0) && norm.email) {
-      const best = await findBestScoresForEmail(norm.email);
-      if (best) {
-        if (best.totalScore > 0) {
-          norm.totalScore = best.totalScore;
-          norm.totalWeightedScore = best.totalWeightedScore;
-        }
-        if (countNonEmptyAnswers(best.answersByRow, best.questionResponses) > 0) {
-          norm.answersByRow = best.answersByRow;
-          const fullBestQuestions = buildCompleteQuestionResponses(best.questionResponses, best.answersByRow);
-          norm.questionResponses = fullBestQuestions;
-          norm.questions = fullBestQuestions;
-        }
-      }
-    }
-
-    let respondentStatus = "Active";
-    const rawSubStatus = String(r.status || "Active").trim();
-    if (rawSubStatus.toLowerCase() === "inactive") {
-      respondentStatus = "Inactive";
-    } else if (norm.respondentId && respondentMapById.has(Number(norm.respondentId))) {
-      respondentStatus = respondentMapById.get(Number(norm.respondentId));
-    } else if (norm.email && respondentMapByEmail.has(String(norm.email).trim().toLowerCase())) {
-      respondentStatus = respondentMapByEmail.get(String(norm.email).trim().toLowerCase());
-    } else if (norm.respondent && respondentMapByName.has(String(norm.respondent).trim().toLowerCase())) {
-      respondentStatus = respondentMapByName.get(String(norm.respondent).trim().toLowerCase());
-    }
-    norm.respondentStatus = respondentStatus;
-    norm.status = rawSubStatus;
-
-    result.push(norm);
-  }
-
-  return result;
+  return rows.map((r) => normalizeSubmissionRow(r));
 }
 
 async function deleteSubmissionById(id) {
   await ensureSubmissionsTable();
 
   const [subRows] = await db.execute(
-    `SELECT respondent_id, email FROM assessment_submissions WHERE id = ?`,
+    `SELECT respondent_id FROM assessment_submissions WHERE id = ?`,
     [id]
   );
 
@@ -620,19 +536,8 @@ async function deleteSubmissionById(id) {
     [id]
   );
 
-  if (subRows.length > 0) {
-    const { respondent_id, email } = subRows[0];
-    const { hashIdentifier } = require("../utils/dataSecurity");
-
-    if (respondent_id) {
-      await db.execute(`UPDATE Respondent SET status = 'Inactive' WHERE id = ?`, [respondent_id]);
-    }
-    if (email) {
-      const emailHash = hashIdentifier(String(email).trim().toLowerCase());
-      if (emailHash) {
-        await db.execute(`UPDATE Respondent SET status = 'Inactive' WHERE email_hash = ?`, [emailHash]);
-      }
-    }
+  if (subRows.length > 0 && subRows[0].respondent_id) {
+    await db.execute(`UPDATE respondent SET status = 'Inactive' WHERE id = ?`, [subRows[0].respondent_id]);
   }
 
   return { deleted: Number(result?.affectedRows || 0) > 0 };
@@ -642,7 +547,7 @@ async function reactivateSubmissionById(id) {
   await ensureSubmissionsTable();
 
   const [subRows] = await db.execute(
-    `SELECT respondent_id, email FROM assessment_submissions WHERE id = ?`,
+    `SELECT respondent_id FROM assessment_submissions WHERE id = ?`,
     [id]
   );
 
@@ -651,19 +556,8 @@ async function reactivateSubmissionById(id) {
     [id]
   );
 
-  if (subRows.length > 0) {
-    const { respondent_id, email } = subRows[0];
-    const { hashIdentifier } = require("../utils/dataSecurity");
-
-    if (respondent_id) {
-      await db.execute(`UPDATE Respondent SET status = 'Active' WHERE id = ?`, [respondent_id]);
-    }
-    if (email) {
-      const emailHash = hashIdentifier(String(email).trim().toLowerCase());
-      if (emailHash) {
-        await db.execute(`UPDATE Respondent SET status = 'Active' WHERE email_hash = ?`, [emailHash]);
-      }
-    }
+  if (subRows.length > 0 && subRows[0].respondent_id) {
+    await db.execute(`UPDATE respondent SET status = 'Active' WHERE id = ?`, [subRows[0].respondent_id]);
   }
 
   return { reactivated: Number(result?.affectedRows || 0) > 0 };
@@ -671,11 +565,17 @@ async function reactivateSubmissionById(id) {
 
 exports.saveDraft = async (req, res) => {
   try {
-    const payload = normalizeDraftPayload(req.body || {});
-
-    if (!payload.respondent.trim()) {
-      return res.status(400).json({ success: false, message: "Respondent name is required." });
+    const respondentId = req.user?.id;
+    if (!respondentId) {
+      return res.status(401).json({ success: false, message: "Authentication required to save draft." });
     }
+
+    const canonicalRespondent = await getActiveById(respondentId);
+    if (!canonicalRespondent) {
+      return res.status(403).json({ success: false, message: "Active respondent account required." });
+    }
+
+    const payload = normalizeDraftPayload(req.body || {});
 
     if (Object.keys(payload.answersByRow).length === 0) {
       return res.status(400).json({ success: false, message: "At least one answer is required to save a draft." });
@@ -683,17 +583,15 @@ exports.saveDraft = async (req, res) => {
 
     await db.execute(
       `INSERT INTO assessment_drafts
-        (respondent_id, assessment_type, respondent_name, answered_count, draft_payload)
-       VALUES (?, ?, ?, ?, ?)
+        (respondent_id, assessment_type, answered_count, draft_payload)
+       VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-        respondent_name = VALUES(respondent_name),
         answered_count = VALUES(answered_count),
         draft_payload = VALUES(draft_payload),
         updated_at = CURRENT_TIMESTAMP`,
       [
-        req.user.id,
-        "leadership_reset",
-        payload.respondent,
+        respondentId,
+        ASSESSMENT_TYPE,
         payload.answeredCount,
         JSON.stringify(payload),
       ]
@@ -702,7 +600,11 @@ exports.saveDraft = async (req, res) => {
     return res.json({
       success: true,
       message: `Draft saved. You answered ${payload.answeredCount} questions.`,
-      data: payload,
+      data: {
+        ...payload,
+        respondentId,
+        respondent: canonicalRespondent.fullName,
+      },
     });
   } catch (error) {
     console.error(error);
@@ -716,25 +618,30 @@ exports.saveDraft = async (req, res) => {
 
 exports.savePublicDraft = async (req, res) => {
   try {
-    const payload = normalizePublicDraftPayload(req.body || {});
+    const respondentId = Number(req.body?.respondentId || 0);
 
-    if (!Number.isFinite(payload.respondentId) || payload.respondentId <= 0) {
+    if (!Number.isFinite(respondentId) || respondentId <= 0) {
       return res.status(400).json({ success: false, message: "Valid respondentId is required." });
     }
 
+    const canonicalRespondent = await getActiveById(respondentId);
+    if (!canonicalRespondent) {
+      return res.status(404).json({ success: false, message: "Active respondent not found for given respondentId." });
+    }
+
+    const payload = normalizeDraftPayload(req.body || {});
+
     await db.execute(
       `INSERT INTO assessment_drafts
-        (respondent_id, assessment_type, respondent_name, answered_count, draft_payload)
-       VALUES (?, ?, ?, ?, ?)
+        (respondent_id, assessment_type, answered_count, draft_payload)
+       VALUES (?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
-        respondent_name = VALUES(respondent_name),
         answered_count = VALUES(answered_count),
         draft_payload = VALUES(draft_payload),
         updated_at = CURRENT_TIMESTAMP`,
       [
-        payload.respondentId,
-        "leadership_reset",
-        payload.respondent,
+        respondentId,
+        ASSESSMENT_TYPE,
         payload.answeredCount,
         JSON.stringify(payload),
       ]
@@ -743,7 +650,11 @@ exports.savePublicDraft = async (req, res) => {
     return res.json({
       success: true,
       message: `Draft saved. You answered ${payload.answeredCount} questions.`,
-      data: payload,
+      data: {
+        ...payload,
+        respondentId,
+        respondent: canonicalRespondent.fullName,
+      },
     });
   } catch (error) {
     console.error(error);
@@ -757,11 +668,27 @@ exports.savePublicDraft = async (req, res) => {
 
 exports.getDraft = async (req, res) => {
   try {
+    const respondentId = req.user?.id;
+    if (!respondentId) {
+      return res.status(401).json({ success: false, message: "Authentication required to load draft." });
+    }
+
     const [rows] = await db.execute(
-      `SELECT respondent_name, answered_count, draft_payload, updated_at
-       FROM assessment_drafts
-       WHERE respondent_id = ? AND assessment_type = ?`,
-      [req.user.id, "leadership_reset"]
+      `SELECT
+         d.id,
+         d.respondent_id,
+         d.answered_count,
+         d.draft_payload,
+         d.updated_at,
+         r.firstname,
+         r.lastname,
+         r.email,
+         r.mobile,
+         r.status
+       FROM assessment_drafts d
+       JOIN respondent r ON r.id = d.respondent_id AND r.status = 'Active'
+       WHERE d.respondent_id = ? AND d.assessment_type = ?`,
+      [respondentId, ASSESSMENT_TYPE]
     );
 
     if (rows.length === 0) {
@@ -769,6 +696,9 @@ exports.getDraft = async (req, res) => {
     }
 
     const row = rows[0];
+    const pii = toDecryptedRespondent(row);
+    const fullName = formatFullName(pii.firstname, pii.lastname);
+
     const payload = typeof row.draft_payload === "string"
       ? JSON.parse(row.draft_payload)
       : row.draft_payload;
@@ -777,7 +707,10 @@ exports.getDraft = async (req, res) => {
       success: true,
       data: {
         ...payload,
-        respondent: payload.respondent || row.respondent_name,
+        respondentId: Number(row.respondent_id),
+        respondent: fullName,
+        email: String(pii.email || "").trim().toLowerCase(),
+        mobile: String(pii.mobile || "").trim(),
         answeredCount: Number(payload.answeredCount || row.answered_count || 0),
         savedAt: payload.savedAt || row.updated_at,
       },
@@ -797,46 +730,68 @@ exports.getPublicDraft = async (req, res) => {
     const respondentId = Number(req.params.respondentId || 0);
 
     if (!Number.isFinite(respondentId) || respondentId <= 0) {
-      return res.status(400).json({ success: false, message: 'Valid respondentId is required.' });
+      return res.status(400).json({ success: false, message: "Valid respondentId is required." });
     }
 
     const [rows] = await db.execute(
-      `SELECT respondent_name, answered_count, draft_payload, updated_at
-       FROM assessment_drafts
-       WHERE respondent_id = ? AND assessment_type = ?`,
-      [respondentId, "leadership_reset"]
+      `SELECT
+         d.id,
+         d.respondent_id,
+         d.answered_count,
+         d.draft_payload,
+         d.updated_at,
+         r.firstname,
+         r.lastname,
+         r.email,
+         r.mobile,
+         r.status
+       FROM assessment_drafts d
+       JOIN respondent r ON r.id = d.respondent_id AND r.status = 'Active'
+       WHERE d.respondent_id = ? AND d.assessment_type = ?`,
+      [respondentId, ASSESSMENT_TYPE]
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'No draft found.' });
+      return res.status(404).json({ success: false, message: "No draft found." });
     }
 
     const row = rows[0];
-    const payload = typeof row.draft_payload === 'string' ? JSON.parse(row.draft_payload) : row.draft_payload;
+    const pii = toDecryptedRespondent(row);
+    const fullName = formatFullName(pii.firstname, pii.lastname);
+
+    const payload = typeof row.draft_payload === "string"
+      ? JSON.parse(row.draft_payload)
+      : row.draft_payload;
 
     return res.json({
       success: true,
       data: {
         ...payload,
-        respondent: payload.respondent || row.respondent_name,
+        respondentId: Number(row.respondent_id),
+        respondent: fullName,
+        email: String(pii.email || "").trim().toLowerCase(),
+        mobile: String(pii.mobile || "").trim(),
         answeredCount: Number(payload.answeredCount || row.answered_count || 0),
         savedAt: payload.savedAt || row.updated_at,
       },
     });
   } catch (error) {
     console.error(error);
-    return res.status(500).json({ success: false, message: 'Failed to load public draft', details: error.message });
+    return res.status(500).json({ success: false, message: "Failed to load public draft", details: error.message });
   }
 };
 
 exports.deletePublicDraft = async (req, res) => {
   try {
-    const { respondentId } = req.params;
+    const respondentId = Number(req.params.respondentId || 0);
+    if (!Number.isFinite(respondentId) || respondentId <= 0) {
+      return res.status(400).json({ success: false, message: "Valid respondentId is required." });
+    }
 
     const [result] = await db.execute(
       `DELETE FROM assessment_drafts
        WHERE respondent_id = ? AND assessment_type = ?`,
-      [respondentId, "leadership_reset"]
+      [respondentId, ASSESSMENT_TYPE]
     );
 
     return res.json({
@@ -855,10 +810,15 @@ exports.deletePublicDraft = async (req, res) => {
 
 exports.deleteDraft = async (req, res) => {
   try {
+    const respondentId = req.user?.id;
+    if (!respondentId) {
+      return res.status(401).json({ success: false, message: "Authentication required to delete draft." });
+    }
+
     const [result] = await db.execute(
       `DELETE FROM assessment_drafts
        WHERE respondent_id = ? AND assessment_type = ?`,
-      [req.user.id, "leadership_reset"]
+      [respondentId, ASSESSMENT_TYPE]
     );
 
     return res.json({
@@ -877,51 +837,36 @@ exports.deleteDraft = async (req, res) => {
 
 exports.submitAssessment = async (req, res) => {
   try {
-    const normalizedPayload = normalizeSubmissionPayload(req.body || {});
+    const incomingRespondentId = Number(req.user?.id || req.body?.respondentId || 0);
+    const incomingEmail = String(req.body?.email || "").trim().toLowerCase();
 
-    if (normalizedPayload.email) {
-      try {
-        const { findRespondentByEmail } = require("./authController");
-        const { toDecryptedRespondent } = require("../utils/dataSecurity");
-        if (typeof findRespondentByEmail === "function") {
-          const existingResp = await findRespondentByEmail(normalizedPayload.email);
-          if (existingResp) {
-            const decrypted = toDecryptedRespondent(existingResp);
-            const f = String(decrypted.firstname || "").trim();
-            const l = String(decrypted.lastname || "").trim();
-            if (f) normalizedPayload.firstName = f;
-            if (l) normalizedPayload.lastName = l;
-            if (f || l) normalizedPayload.respondent = `${f} ${l}`.trim();
-            if (decrypted.mobile) normalizedPayload.mobile = String(decrypted.mobile).trim();
-            if (decrypted.id) normalizedPayload.respondentId = Number(decrypted.id);
-          }
-        }
-      } catch (err) {
-        console.error("Respondent DB lookup warning:", err);
-      }
+    let canonicalRespondent = null;
+
+    if (incomingRespondentId > 0) {
+      canonicalRespondent = await getActiveById(incomingRespondentId);
     }
+
+    if (!canonicalRespondent && incomingEmail) {
+      canonicalRespondent = await getByEmail(incomingEmail, { activeOnly: true });
+    }
+
+    if (!canonicalRespondent) {
+      return res.status(400).json({
+        success: false,
+        message: "Unable to submit: Active respondent record not found. Please register or enter valid details.",
+      });
+    }
+
+    const normalizedPayload = normalizeSubmissionPayload(req.body || {});
+    const respondentId = canonicalRespondent.id;
+
     const existingSubmission = await findExistingAssessmentSubmission({
-      respondentId: req.user?.id,
-      email: normalizedPayload.email,
+      respondentId,
+      email: canonicalRespondent.email,
     });
 
-    const isReschedule = Boolean(req.body?.isReschedule || req.body?.bookingDetails?.isReschedule || existingSubmission);
-
     const incomingValidCount = countNonEmptyAnswers(normalizedPayload.answersByRow, normalizedPayload.questionResponses);
-
-    if (isReschedule || incomingValidCount === 0) {
-      const best = await findBestScoresForEmail(normalizedPayload.email);
-      if (best) {
-        if (incomingValidCount === 0) {
-          normalizedPayload.answersByRow = best.answersByRow;
-          normalizedPayload.questionResponses = buildCompleteQuestionResponses(best.questionResponses, best.answersByRow);
-        }
-        if (normalizedPayload.totalScore === 0 && best.totalScore > 0) {
-          normalizedPayload.totalScore = best.totalScore;
-          normalizedPayload.totalWeightedScore = best.totalWeightedScore;
-        }
-      }
-    }
+    const isReschedule = Boolean(req.body?.isReschedule || req.body?.bookingDetails?.isReschedule) || (Boolean(existingSubmission) && incomingValidCount === 0);
 
     const { isSlotBookedOrBlocked } = require("../utils/slotService");
     const booking = normalizedPayload.bookingDetails || {};
@@ -936,7 +881,7 @@ exports.submitAssessment = async (req, res) => {
     }
 
     const scriptUrl = process.env.GOOGLE_SCRIPT_URL || DEFAULT_SCRIPT_URL;
-    const outgoingPayload = buildScriptPayload(normalizedPayload);
+    const outgoingPayload = buildScriptPayload(normalizedPayload, canonicalRespondent);
 
     let acceptedByUpstream = false;
     let parsed = null;
@@ -960,10 +905,9 @@ exports.submitAssessment = async (req, res) => {
           parsed?.json?.success === true ||
           normalizedText === "success" ||
           normalizedText.includes("saved") ||
-          normalizedText.includes("updated") ||
-          normalizedText.includes("success");
+          normalizedText.includes("updated");
       } catch (upstreamError) {
-        console.error('Failed to submit to Google Script upstream:', upstreamError.message || upstreamError);
+        console.error("Failed to submit to Google Script upstream:", upstreamError.message || upstreamError);
         rawText = upstreamError.message || String(upstreamError);
         parsed = { json: { success: false, message: rawText }, text: rawText };
       }
@@ -972,17 +916,15 @@ exports.submitAssessment = async (req, res) => {
       parsed = { json: { success: true, message: "Skipped duplicate Google Sheet append on reschedule." }, text: "success" };
     }
 
-    let dbSaved = false;
     try {
-      await saveSubmissionRecord(normalizedPayload.respondentId, normalizedPayload);
-      dbSaved = true;
+      await saveSubmissionRecord(respondentId, normalizedPayload);
     } catch (dbError) {
-      console.error('Failed to save assessment submission to database:', dbError.message || dbError);
+      console.error("Failed to save assessment submission to database:", dbError.message || dbError);
       return res.status(500).json({
         success: false,
         dbSaved: false,
         sheetSuccess: acceptedByUpstream,
-        message: 'Failed to save assessment submission to the database.',
+        message: "Failed to save assessment submission to the database.",
         details: dbError.message,
       });
     }
@@ -991,13 +933,13 @@ exports.submitAssessment = async (req, res) => {
     let adminMailSent = false;
 
     try {
-      const recipient = normalizedPayload.email;
+      const recipient = canonicalRespondent.email;
       if (recipient) {
         mailSent = await sendAssessmentResultEmail(recipient, {
-          respondent: normalizedPayload.respondent,
-          firstName: normalizedPayload.firstName,
-          lastName: normalizedPayload.lastName,
-          email: normalizedPayload.email,
+          respondent: canonicalRespondent.fullName,
+          firstName: canonicalRespondent.firstname,
+          lastName: canonicalRespondent.lastname,
+          email: canonicalRespondent.email,
           totalScore: normalizedPayload.totalScore,
           totalWeightedScore: normalizedPayload.totalWeightedScore,
           submittedAt: normalizedPayload.submittedAt,
@@ -1007,11 +949,11 @@ exports.submitAssessment = async (req, res) => {
         });
       }
       try {
-        adminMailSent =await sendAdminNotificationEmail({
-          respondent: normalizedPayload.respondent,
-          firstName: normalizedPayload.firstName,
-          lastName: normalizedPayload.lastName,
-          email: normalizedPayload.email,
+        adminMailSent = await sendAdminNotificationEmail({
+          respondent: canonicalRespondent.fullName,
+          firstName: canonicalRespondent.firstname,
+          lastName: canonicalRespondent.lastname,
+          email: canonicalRespondent.email,
           totalScore: normalizedPayload.totalScore,
           totalWeightedScore: normalizedPayload.totalWeightedScore,
           submittedAt: normalizedPayload.submittedAt,
@@ -1022,41 +964,56 @@ exports.submitAssessment = async (req, res) => {
       } catch (err) {
         console.error("Failed to send admin notification:", err.message);
       }
-
     } catch (e) {
       mailSent = false;
       adminMailSent = false;
       console.error("Failed to send assessment email:", e?.message);
     }
 
-    // remove any draft for this respondent when auth is present
-    if (req.user && Number.isFinite(req.user.id) && req.user.id > 0) {
-      try {
-        await db.execute(
-          `DELETE FROM assessment_drafts WHERE respondent_id = ? AND assessment_type = ?`,
-          [req.user.id, ASSESSMENT_TYPE]
-        );
-      } catch (e) {
-        console.error('Failed to remove draft after submission:', e.message);
-      }
+    // Remove draft after submission
+    try {
+      await db.execute(
+        `DELETE FROM assessment_drafts WHERE respondent_id = ? AND assessment_type = ?`,
+        [respondentId, ASSESSMENT_TYPE]
+      );
+    } catch (e) {
+      console.error("Failed to remove draft after submission:", e.message);
     }
 
-    // Return text so existing frontend text-based success check keeps working.
-    // if (parsed && parsed.text) {
-    //   return res.status(200).send(parsed.text);
-    // }
+    let scoringResult = null;
+    try {
+      const s = computeTab3Scoring(normalizedPayload.questionResponses);
+      scoringResult = {
+        zone: s.zone,
+        zoneSummary: s.zoneSummary,
+        overallPct: s.overallPctDisplay,
+        rawTotal: s.rawTotal,
+        weakestCategory: s.weakestCategory,
+        action: s.actions.onScreen,
+      };
+    } catch (e) {
+      console.error("Scoring computation for response payload failed:", e?.message);
+    }
 
     const responsePayload = {
       success: acceptedByUpstream,
       dbSaved: true,
       sheetSuccess: acceptedByUpstream,
       mailSent,
+      scoring: scoringResult,
       message: acceptedByUpstream
         ? (parsed?.json?.message || rawText || "Assessment submitted successfully.")
         : (parsed?.json?.message || rawText || "Saved to DB but failed to submit to Google Sheet."),
+      respondent: {
+        id: canonicalRespondent.id,
+        firstName: canonicalRespondent.firstname,
+        lastName: canonicalRespondent.lastname,
+        email: canonicalRespondent.email,
+        mobile: canonicalRespondent.mobile,
+        status: canonicalRespondent.status,
+      },
     };
     return res.status(200).json(responsePayload);
-
   } catch (error) {
     console.error(error);
     return res.status(502).json({
@@ -1069,11 +1026,12 @@ exports.submitAssessment = async (req, res) => {
 
 exports.getSubmissionStatus = async (req, res) => {
   try {
-    if (!req.user || !Number.isFinite(req.user.id) || req.user.id <= 0) {
-      return res.status(400).json({ success: false, message: 'Authenticated user required to check submission status.' });
+    const respondentId = Number(req.user?.id || 0);
+    if (!respondentId) {
+      return res.status(400).json({ success: false, message: "Authenticated user required to check submission status." });
     }
 
-    const submission = await getSubmissionRecordByRespondentId(req.user.id);
+    const submission = await getSubmissionRecordByRespondentId(respondentId);
 
     if (!submission) {
       return res.json({ success: true, submitted: false });
@@ -1171,13 +1129,18 @@ exports.cancelBooking = async (req, res) => {
       return res.status(400).json({ success: false, message: "Email is required to cancel an appointment." });
     }
 
+    const canonicalRespondent = await getByEmail(email);
+    if (!canonicalRespondent) {
+      return res.status(404).json({ success: false, message: "No respondent found for this email address." });
+    }
+
     const [rows] = await db.execute(
-      `SELECT id, respondent_name, email, submission_payload FROM assessment_submissions WHERE LOWER(TRIM(email)) = ? ORDER BY id DESC LIMIT 1`,
-      [email]
+      `SELECT id, submission_payload FROM assessment_submissions WHERE respondent_id = ? ORDER BY id DESC LIMIT 1`,
+      [canonicalRespondent.id]
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: "No active submission/booking found for this email address." });
+      return res.status(404).json({ success: false, message: "No active submission/booking found for this respondent." });
     }
 
     const row = rows[0];
@@ -1187,9 +1150,9 @@ exports.cancelBooking = async (req, res) => {
     } catch (e) {}
 
     const booking = payload.bookingDetails || {};
-    const scheduledDate = booking.scheduledDate || payload.scheduledDate || "";
-    const scheduledTime = booking.scheduledTime || payload.scheduledTime || "";
-    const timeZone = booking.timeZone || payload.timeZone || "India,Asia/Kolkata";
+    const scheduledDate = booking.scheduledDate || "";
+    const scheduledTime = booking.scheduledTime || "";
+    const timeZone = booking.timeZone || "India,Asia/Kolkata";
 
     const updatedBookingDetails = {
       ...booking,
@@ -1210,10 +1173,10 @@ exports.cancelBooking = async (req, res) => {
     );
 
     const mailPayload = {
-      firstName: payload.firstName || row.respondent_name || "Participant",
-      lastName: payload.lastName || "",
-      respondent: row.respondent_name || payload.respondent || "Participant",
-      email: row.email,
+      firstName: canonicalRespondent.firstname || "Participant",
+      lastName: canonicalRespondent.lastname || "",
+      respondent: canonicalRespondent.fullName || "Participant",
+      email: canonicalRespondent.email,
       scheduledDate,
       scheduledTime,
       timeZone,
@@ -1224,7 +1187,7 @@ exports.cancelBooking = async (req, res) => {
     let adminMailSent = false;
 
     try {
-      userMailSent = await sendCancellationUserEmail(row.email, mailPayload);
+      userMailSent = await sendCancellationUserEmail(canonicalRespondent.email, mailPayload);
     } catch (e) {
       console.error("Failed to send cancellation user email:", e);
     }
@@ -1243,7 +1206,7 @@ exports.cancelBooking = async (req, res) => {
       data: {
         scheduledDate,
         scheduledTime,
-        email: row.email,
+        email: canonicalRespondent.email,
       },
     });
   } catch (error) {
@@ -1251,4 +1214,3 @@ exports.cancelBooking = async (req, res) => {
     return res.status(500).json({ success: false, message: "Internal server error while cancelling appointment.", details: error.message });
   }
 };
-

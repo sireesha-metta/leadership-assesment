@@ -2,6 +2,60 @@ const pool = require("../config/db");
 const { generateRespondentsExcel, generateSubmissionsExcel } = require("../utils/xlGenerator");
 const { ensureRespondentSecuritySchema, toDecryptedRespondent } = require("../utils/dataSecurity");
 
+// GET /api/admin/drafts - in-progress (draft) assessments still within the 24h window
+exports.getDrafts = async (req, res) => {
+  try {
+    await ensureRespondentSecuritySchema(pool);
+
+    const [rows] = await pool.query(`
+      SELECT
+        d.id,
+        d.respondent_id,
+        d.answered_count,
+        d.updated_at,
+        d.created_at,
+        r.email,
+        r.firstname,
+        r.lastname,
+        r.status
+      FROM assessment_drafts d
+      JOIN respondent r ON r.id = d.respondent_id AND r.status = 'Active'
+      WHERE d.assessment_type = 'leadership_reset'
+        AND d.updated_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
+      ORDER BY d.updated_at DESC
+    `);
+
+    const drafts = rows.map((row) => {
+      const pii = toDecryptedRespondent(row);
+      const firstName = String(pii.firstname || "").trim();
+      const lastName = String(pii.lastname || "").trim();
+      const fullName = `${firstName} ${lastName}`.trim();
+      const updatedAt = row.updated_at ? new Date(row.updated_at) : null;
+      const elapsedMs = updatedAt ? Date.now() - updatedAt.getTime() : null;
+      const hoursRemaining = elapsedMs != null
+        ? Math.max(0, Math.ceil(24 - elapsedMs / (1000 * 60 * 60)))
+        : null;
+
+      return {
+        id: row.id,
+        respondentId: row.respondent_id,
+        name: fullName || "Respondent",
+        email: String(pii.email || "").trim().toLowerCase(),
+        answeredCount: Number(row.answered_count || 0),
+        status: "In Progress",
+        updatedAt: row.updated_at,
+        createdAt: row.created_at,
+        hoursRemaining,
+      };
+    });
+
+    return res.json({ success: true, drafts });
+  } catch (error) {
+    console.error("Get Drafts Error:", error);
+    return res.status(500).json({ success: false, message: "Unable to load draft assessments." });
+  }
+};
+
 exports.exportRespondents = async (req, res) => {
   try {
     await ensureRespondentSecuritySchema(pool);
@@ -15,7 +69,7 @@ exports.exportRespondents = async (req, res) => {
         role,
         status,
         created_at
-    FROM Respondent
+    FROM respondent
     ORDER BY created_at DESC
   `);
 
@@ -53,23 +107,40 @@ exports.exportRespondents = async (req, res) => {
 
 exports.exportSubmissions = async (req, res) => {
   try {
+    await ensureRespondentSecuritySchema(pool);
+
     const [assessment_submissions] = await pool.query(`
       SELECT
-        id,
-        respondent_id,
-        respondent_name,
-        email,
-        assessment_type,
-        submitted_at,
-        total_score,
-        total_weighted_score,
-        submission_payload,
-        created_at
-      FROM assessment_submissions
-      ORDER BY submitted_at DESC
+        s.id,
+        s.respondent_id,
+        s.assessment_type,
+        s.submitted_at,
+        s.total_score,
+        s.total_weighted_score,
+        s.submission_payload,
+        s.created_at,
+        r.firstname,
+        r.lastname,
+        r.email,
+        r.mobile
+      FROM assessment_submissions s
+      JOIN respondent r ON r.id = s.respondent_id
+      ORDER BY s.submitted_at DESC
     `);
 
-    const buffer = await generateSubmissionsExcel(assessment_submissions);
+    const decryptedSubmissions = assessment_submissions.map((row) => {
+      const pii = toDecryptedRespondent(row);
+      const firstName = String(pii.firstname || "").trim();
+      const lastName = String(pii.lastname || "").trim();
+      const fullName = `${firstName} ${lastName}`.trim();
+      return {
+        ...row,
+        respondent_name: fullName || "Respondent",
+        email: String(pii.email || "").trim().toLowerCase(),
+      };
+    });
+
+    const buffer = await generateSubmissionsExcel(decryptedSubmissions);
 
     res.setHeader(
       "Content-Type",

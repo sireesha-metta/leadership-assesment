@@ -121,8 +121,12 @@ async function getAvailableAndBookedSlots(dateStr) {
   const blockedTimeSlots = matchingBlocks.map((r) => r.slot_time).filter(Boolean);
   const allBlockedSlots = Array.from(new Set([...blockedTimeSlots, ...disabledByAdmin]));
 
+  const { toDecryptedRespondent } = require("./dataSecurity");
   const [submissions] = await db.query(
-    "SELECT id, respondent_id, email, submission_payload FROM assessment_submissions ORDER BY id DESC"
+    `SELECT s.id, s.respondent_id, s.submission_payload, r.email
+     FROM assessment_submissions s
+     JOIN respondent r ON r.id = s.respondent_id
+     ORDER BY s.id DESC`
   );
 
   const latestSubmissionsByEmail = new Map();
@@ -132,7 +136,8 @@ async function getAvailableAndBookedSlots(dateStr) {
       if (typeof payload === "string") {
         payload = JSON.parse(payload);
       }
-      const email = String(row.email || payload?.email || "").trim().toLowerCase();
+      const pii = toDecryptedRespondent(row);
+      const email = String(pii.email || payload?.email || "").trim().toLowerCase();
       const key = email || `resp_${row.respondent_id || row.id}`;
 
       if (!latestSubmissionsByEmail.has(key)) {

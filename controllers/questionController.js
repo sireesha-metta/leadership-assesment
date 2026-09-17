@@ -2,10 +2,20 @@ const path = require("path");
 const XLSX = require("xlsx");
 
 const DEFAULT_QUESTION_ROWS = [6, 7, 8, 9, 12, 13, 14, 15, 18, 19, 20, 21];
+
 const DEFAULT_SECTIONS = {
   6: "DECISION MAKING",
+  7: "DECISION MAKING",
+  8: "DECISION MAKING",
+  9: "DECISION MAKING",
   12: "CONVERSATION PATTERNS",
+  13: "CONVERSATION PATTERNS",
+  14: "CONVERSATION PATTERNS",
+  15: "CONVERSATION PATTERNS",
   18: "LEADER SIGNALS",
+  19: "LEADER SIGNALS",
+  20: "LEADER SIGNALS",
+  21: "LEADER SIGNALS",
 };
 
 function parseOptions(optionsStr) {
@@ -56,7 +66,7 @@ exports.getQuestions = (req, res) => {
   try {
     const filePath =
       process.env.QUESTIONS_FILE_PATH ||
-      path.join(process.cwd(), "Leadership_Reset_Diagnostic_NR.xlsx");
+      path.join(process.cwd(), "Leadership_Reset_Diagnostic1.xlsx");
     const sheetName = process.env.QUESTIONS_SHEET_NAME || "Diagnostic";
     const scoreSheetName = process.env.SCORE_SHEET_NAME || "Scores";
 
@@ -97,7 +107,7 @@ exports.getQuestions = (req, res) => {
         answer: answerCell ? String(answerCell.v) : "",
         score: scoreCell ? String(scoreCell.v ?? "") : "",
         weight: row[5] ?? "",
-        section: DEFAULT_SECTIONS[rowIdx] || null,
+        section: DEFAULT_SECTIONS[rowIdx] || "DECISION MAKING",
       };
     });
 
@@ -120,7 +130,7 @@ exports.saveAnswers = (req, res) => {
 
     const filePath =
       process.env.QUESTIONS_FILE_PATH ||
-      path.join(process.cwd(), "Leadership_Reset_Diagnostic_NR.xlsx");
+      path.join(process.cwd(), "Leadership_Reset_Diagnostic1.xlsx");
     const sheetName = process.env.QUESTIONS_SHEET_NAME || "Diagnostic";
 
     const workbook = XLSX.readFile(filePath);

@@ -55,8 +55,6 @@ async function insertUploadHistory(req) {
   const filePathColumn = pickFirstExisting(tableColumns, ["file_path", "path"]);
   const fileSizeColumn = pickFirstExisting(tableColumns, ["file_size", "size"]);
   const uploadedByColumn = pickFirstExisting(tableColumns, ["uploaded_by", "user_id", "created_by"]);
-  const uploadedByNameColumn = pickFirstExisting(tableColumns, ["uploaded_by_name", "user_name", "created_by_name"]);
-  const uploaderName = uploadedByNameColumn ? await resolveUploaderName(req.user) : null;
 
   const insertPairs = [];
 
@@ -65,7 +63,6 @@ async function insertUploadHistory(req) {
   if (filePathColumn) insertPairs.push([filePathColumn, req.file.path]);
   if (fileSizeColumn) insertPairs.push([fileSizeColumn, req.file.size]);
   if (uploadedByColumn) insertPairs.push([uploadedByColumn, req.user?.id || null]);
-  if (uploadedByNameColumn) insertPairs.push([uploadedByNameColumn, uploaderName]);
 
   if (!insertPairs.length) return;
 
