@@ -4,6 +4,7 @@ const UPSTREAM_TIMEOUT_MS = Number(process.env.GOOGLE_SCRIPT_TIMEOUT_MS || 30000
 const UPSTREAM_RETRY_COUNT = Number(process.env.GOOGLE_SCRIPT_RETRY_COUNT || 1);
 const db = require("../config/db");
 const { sendAssessmentResultEmail, sendAdminNotificationEmail } = require("../utils/mailer");
+const { computeTab3Scoring } = require("../utils/scoring");
 const ASSESSMENT_TYPE = "leadership_reset";
 
 const ROW_TO_QKEY = {
@@ -1044,11 +1045,28 @@ exports.submitAssessment = async (req, res) => {
     //   return res.status(200).send(parsed.text);
     // }
 
+    // Compute teaser scoring (zone + single on-screen action) for the response
+    let scoringResult = null;
+    try {
+      const s = computeTab3Scoring(normalizedPayload.questionResponses);
+      scoringResult = {
+        zone: s.zone,
+        zoneSummary: s.zoneSummary,
+        overallPct: s.overallPctDisplay,
+        rawTotal: s.rawTotal,
+        weakestCategory: s.weakestCategory,
+        action: s.actions.onScreen,
+      };
+    } catch (e) {
+      console.error("Scoring computation for response payload failed:", e?.message);
+    }
+
     const responsePayload = {
       success: acceptedByUpstream,
       dbSaved: true,
       sheetSuccess: acceptedByUpstream,
       mailSent,
+      scoring: scoringResult,
       message: acceptedByUpstream
         ? (parsed?.json?.message || rawText || "Assessment submitted successfully.")
         : (parsed?.json?.message || rawText || "Saved to DB but failed to submit to Google Sheet."),

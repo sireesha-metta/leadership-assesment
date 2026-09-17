@@ -55,14 +55,19 @@ function computeTab3Scoring(questionResponses = []) {
   const totalWeighted = dmScore + cpScore + lsScore;
   const overallPct = Number((totalWeighted / 91).toFixed(4));
 
+  // Zone thresholds per spec (raw score out of 91):
+  // Green: >= 68 (75%), Amber: 46-67 (50-74%), Red: <= 45 (<50%)
   let zone = "Red";
-  if (overallPct >= 0.75) {
+  if (totalWeighted >= 68) {
     zone = "Green";
-  } else if (overallPct >= 0.50) {
+  } else if (totalWeighted >= 46) {
     zone = "Amber";
   }
 
-  // Sort categories by percentage ascending (lowest first)
+  // Sort categories by percentage ascending (lowest first).
+  // Tie-break rule per spec: default to whichever comes LATER in
+  // Decision Making -> Conversation Patterns -> Leader Signals,
+  // since Leader Signals carries the highest question weights.
   const categories = [
     { name: "Decision Making", pct: dmPct, score: dmScore, max: 28, priority: 1 },
     { name: "Conversation Patterns", pct: cpPct, score: cpScore, max: 28, priority: 2 },
@@ -73,8 +78,8 @@ function computeTab3Scoring(questionResponses = []) {
     if (a.pct !== b.pct) {
       return a.pct - b.pct;
     }
-   
-    return a.priority - b.priority;
+    // Later theme wins ties
+    return b.priority - a.priority;
   });
 
   const weakest = categories[0];

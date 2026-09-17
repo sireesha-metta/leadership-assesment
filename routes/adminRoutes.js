@@ -5,6 +5,7 @@ const adminController = require("../controllers/adminController");
 
 router.get("/export/respondents", adminController.exportRespondents);
 router.get("/export/submissions", adminController.exportSubmissions);
+router.get("/drafts", adminController.getDrafts);
 
 router.get("/slots/settings", adminController.getSlotSettings);
 router.post("/slots/config", adminController.toggleSlotConfig);

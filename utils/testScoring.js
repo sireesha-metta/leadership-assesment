@@ -51,6 +51,7 @@ console.log("Zone:", res2.zone);
 console.log("Category Pcts:", res2.categoryScores);
 
 // Test Case 3: Tie-Break Test (Decision Making vs Conversation Patterns equal Pct)
+// Per spec, ties default to the theme coming LATER (DM -> CP -> LS), so CP wins.
 const tieResponses = [
   { section: "DECISION MAKING", weightedScore: 14 }, // 14/28 = 50%
   { section: "CONVERSATION PATTERNS", weightedScore: 14 }, // 14/28 = 50%
@@ -62,11 +63,29 @@ console.log("\n--- TEST 3: Tie-Break Priority Test ---");
 console.log("DM Pct:", res3.categoryScores["Decision Making"].pctDisplay, "%");
 console.log("CP Pct:", res3.categoryScores["Conversation Patterns"].pctDisplay, "%");
 console.log("LS Pct:", res3.categoryScores["Leader Signals"].pctDisplay, "%");
-console.log("Weakest Category (Should be Decision Making due to tie priority):", res3.weakestCategory);
-console.log("Second Weakest Category (Should be Conversation Patterns):", res3.secondWeakestCategory);
+console.log("Weakest Category (Should be Conversation Patterns - later theme wins tie):", res3.weakestCategory);
+console.log("Second Weakest Category (Should be Decision Making):", res3.secondWeakestCategory);
 
-if (res3.weakestCategory === "Decision Making" && res3.secondWeakestCategory === "Conversation Patterns") {
+if (res3.weakestCategory === "Conversation Patterns" && res3.secondWeakestCategory === "Decision Making") {
   console.log("\n✅ TIE-BREAK RULE PASSED SUCCESSFULLY!");
 } else {
   console.log("\n❌ TIE-BREAK RULE FAILED!");
+}
+
+// Test Case 4: Zone boundary test - raw score 68 must be Green (>= 68 per spec)
+const boundaryResponses = [
+  { section: "DECISION MAKING", weightedScore: 21 },
+  { section: "CONVERSATION PATTERNS", weightedScore: 21 },
+  { section: "LEADER SIGNALS", weightedScore: 26 }, // total = 68
+];
+
+const res4 = computeTab3Scoring(boundaryResponses);
+console.log("\n--- TEST 4: Zone Boundary Test (score = 68) ---");
+console.log("Overall Total:", res4.rawTotal, "/ 91");
+console.log("Zone (should be Green):", res4.zone);
+
+if (res4.rawTotal === 68 && res4.zone === "Green") {
+  console.log("\n✅ ZONE BOUNDARY RULE PASSED SUCCESSFULLY!");
+} else {
+  console.log("\n❌ ZONE BOUNDARY RULE FAILED!");
 }
