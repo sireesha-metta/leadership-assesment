@@ -55,63 +55,54 @@ async function ensureAssessmentSubmissionTable() {
   await db.execute(
     `CREATE TABLE IF NOT EXISTS assessment_submissions (
       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-      respondent_id BIGINT UNSIGNED NULL,
+      respondent_id INT NOT NULL,
       assessment_type VARCHAR(80) NOT NULL,
-      respondent_name VARCHAR(255) NULL,
-      email VARCHAR(255) NULL,
       submitted_at DATETIME NULL,
       total_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
       total_weighted_score DECIMAL(12, 2) NOT NULL DEFAULT 0,
       submission_payload LONGTEXT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      status VARCHAR(20) NOT NULL DEFAULT 'Active',
       PRIMARY KEY (id),
       UNIQUE KEY uq_submission_once (respondent_id, assessment_type),
-      KEY idx_submission_email (email),
       KEY idx_submission_created_at (created_at)
     )`
   );
 
-  const [emailColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'email'`);
-  if (emailColumns.length === 0) {
-    await db.execute(`ALTER TABLE assessment_submissions ADD COLUMN email VARCHAR(255) NULL`);
+  const [nameCols] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'respondent_name'`);
+  if (nameCols.length > 0) {
+    await db.execute(`ALTER TABLE assessment_submissions DROP COLUMN respondent_name`);
   }
 
-  const [mobileColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'mobile'`);
-  if (mobileColumns.length > 0) {
+  const [emailCols] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'email'`);
+  if (emailCols.length > 0) {
+    await db.execute(`ALTER TABLE assessment_submissions DROP COLUMN email`);
+  }
+
+  const [mobileCols] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'mobile'`);
+  if (mobileCols.length > 0) {
     await db.execute(`ALTER TABLE assessment_submissions DROP COLUMN mobile`);
-  }
-
-  const [respondentIdColumns] = await db.execute(`SHOW COLUMNS FROM assessment_submissions LIKE 'respondent_id'`);
-  if (respondentIdColumns.length > 0 && respondentIdColumns[0].Null === 'NO') {
-    await db.execute(`ALTER TABLE assessment_submissions MODIFY respondent_id BIGINT UNSIGNED NULL`);
   }
 }
 
 async function hasAssessmentSubmissionForIdentity({ respondentId, email }) {
   await ensureAssessmentSubmissionTable();
 
-  const normalizedEmail = normalizeEmail(email);
-  const normalizedRespondentId = Number(respondentId);
-
-  // 1. Check assessment_submissions table by respondent_id
-  if (Number.isFinite(normalizedRespondentId) && normalizedRespondentId > 0) {
-    const [rows] = await db.execute(
-      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE respondent_id = ? AND assessment_type = ? AND (status IS NULL OR status != 'Inactive') ORDER BY id DESC LIMIT 1`,
-      [normalizedRespondentId, "leadership_reset"]
-    );
-    if (rows.length > 0) {
-      return {
-        submitted_at: rows[0].submitted_at || rows[0].created_at,
-        created_at: rows[0].created_at,
-      };
+  let targetRespondentId = Number(respondentId);
+  if ((!Number.isFinite(targetRespondentId) || targetRespondentId <= 0) && email) {
+    const existing = await findRespondentByEmail(email);
+    if (existing) {
+      targetRespondentId = Number(existing.id);
     }
   }
 
-  // 2. Check assessment_submissions table by email
-  if (normalizedEmail) {
+  if (Number.isFinite(targetRespondentId) && targetRespondentId > 0) {
     const [rows] = await db.execute(
-      `SELECT id, submitted_at, created_at FROM assessment_submissions WHERE assessment_type = ? AND LOWER(TRIM(email)) = ? AND (status IS NULL OR status != 'Inactive') ORDER BY id DESC LIMIT 1`,
-      ["leadership_reset", normalizedEmail]
+      `SELECT id, submitted_at, created_at
+       FROM assessment_submissions
+       WHERE respondent_id = ? AND assessment_type = ? AND (status IS NULL OR status != 'Inactive')
+       ORDER BY id DESC LIMIT 1`,
+      [targetRespondentId, "leadership_reset"]
     );
     if (rows.length > 0) {
       return {
@@ -246,15 +237,10 @@ async function updateUserByRoleAndId(role, id, payload) {
     values.push(newStatus);
 
     try {
-      const [userRows] = await db.execute(`SELECT * FROM Respondent WHERE id = ?`, [Number(id)]);
-      if (userRows.length > 0) {
-        const decryptedUser = toDecryptedRespondent(userRows[0]);
-        const userEmail = String(decryptedUser.email || "").trim().toLowerCase();
-        await db.execute(
-          `UPDATE assessment_submissions SET status = ? WHERE respondent_id = ? OR LOWER(TRIM(email)) = ?`,
-          [newStatus, Number(id), userEmail]
-        );
-      }
+      await db.execute(
+        `UPDATE assessment_submissions SET status = ? WHERE respondent_id = ?`,
+        [newStatus, Number(id)]
+      );
     } catch (e) {
       console.error("Failed to sync submission status on respondent status update:", e);
     }
@@ -354,15 +340,10 @@ async function deleteUserByRoleAndId(role, id) {
   const normRole = normalizeRole(role);
   if (normRole === "RESPONDENT") {
     try {
-      const [userRows] = await db.execute(`SELECT * FROM Respondent WHERE id = ?`, [Number(id)]);
-      if (userRows.length > 0) {
-        const decryptedUser = toDecryptedRespondent(userRows[0]);
-        const userEmail = String(decryptedUser.email || "").trim().toLowerCase();
-        await db.execute(
-          `UPDATE assessment_submissions SET status = 'Inactive' WHERE respondent_id = ? OR LOWER(TRIM(email)) = ?`,
-          [Number(id), userEmail]
-        );
-      }
+      await db.execute(
+        `UPDATE assessment_submissions SET status = 'Inactive' WHERE respondent_id = ?`,
+        [Number(id)]
+      );
     } catch (e) {
       console.error("Failed to sync submission status on respondent delete:", e);
     }
@@ -1091,17 +1072,17 @@ exports.getAllDrafts = async (req, res) => {
       SELECT
           d.id,
           d.respondent_id,
-          d.respondent_name AS draft_respondent_name,
           r.firstname,
           r.lastname,
           r.mobile,
           r.email,
+          r.status,
           d.answered_count,
           d.assessment_type,
           d.created_at,
           d.updated_at
       FROM assessment_drafts d
-      INNER JOIN respondent r
+      JOIN respondent r
           ON d.respondent_id = r.id
       ORDER BY d.updated_at DESC
     `);
@@ -1115,9 +1096,14 @@ exports.getAllDrafts = async (req, res) => {
       return {
         id: row.id,
         respondent_id: row.respondent_id,
-        respondent_name: fullName || String(row.draft_respondent_name || "").trim(),
+        respondentId: row.respondent_id,
+        respondent_name: fullName,
+        respondent: fullName,
+        firstName,
+        lastName,
         mobile: String(pii.mobile || "").trim(),
         email: normalizeEmail(pii.email),
+        status: row.status || "Active",
         answered_count: row.answered_count,
         assessment_type: row.assessment_type,
         created_at: row.created_at,
