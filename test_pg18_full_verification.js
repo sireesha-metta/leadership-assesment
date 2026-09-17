@@ -3,11 +3,30 @@ const db = require('./config/db');
 const { ensureRespondentSecuritySchema, toDecryptedRespondent, encryptValue } = require('./utils/dataSecurity');
 const { ensureSlotSchema, getAvailableAndBookedSlots } = require('./utils/slotService');
 
+const fs = require('fs');
+const path = require('path');
+
+async function ensureSchemaLoaded() {
+  const [tableRows] = await db.query(`
+    SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()
+  `);
+  const existingTables = new Set(tableRows.map(r => r.table_name.toLowerCase()));
+  if (!existingTables.has('respondent') || !existingTables.has('assessment_submissions')) {
+    console.log('[PostgreSQL] Initializing schema and data from postgres_schema_and_data.sql...');
+    const sqlPath = path.join(__dirname, '../Database/postgres_schema_and_data.sql');
+    const sql = fs.readFileSync(sqlPath, 'utf8');
+    await db.pool.query(sql);
+    console.log('[PostgreSQL] Schema and data loaded successfully.');
+  }
+}
+
 async function runVerification() {
   console.log('=== STARTING POSTGRESQL 18 COMPREHENSIVE VERIFICATION ===');
   console.log('DB_CLIENT:', process.env.DB_CLIENT);
   console.log('DB_PORT:', process.env.DB_PORT);
   console.log('Is Postgres Engine:', db.isPg);
+
+  await ensureSchemaLoaded();
 
   // 1. Check version
   const [verRows] = await db.query('SELECT version()');

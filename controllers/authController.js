@@ -391,15 +391,28 @@ exports.login = async (req, res) => {
       return res.status(400).json({ success: false, message: "Email/mobile and password are required" });
     }
 
+    const conditions = [];
+    const params = [];
+
+    if (emailHash) {
+      conditions.push("email_hash = ?");
+      params.push(emailHash);
+    }
+    if (mobileHash) {
+      conditions.push("mobile_hash = ?");
+      params.push(mobileHash);
+    }
+
+    if (conditions.length === 0) {
+      return res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+
     const [rows] = await db.execute(
       `SELECT *
-       FROM Respondent
+       FROM respondent
        WHERE status = 'Active'
-         AND (
-           (? IS NOT NULL AND email_hash = ?)
-           OR (? IS NOT NULL AND mobile_hash = ?)
-         )`,
-      [emailHash, emailHash, mobileHash, mobileHash]
+         AND (${conditions.join(" OR ")})`,
+      params
     );
 
     if (rows.length === 0) {

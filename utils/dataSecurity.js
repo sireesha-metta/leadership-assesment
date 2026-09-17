@@ -118,6 +118,8 @@ async function ensureRespondentSecuritySchema(db) {
       await db.execute(`ALTER TABLE respondent ADD COLUMN IF NOT EXISTS mobile_hash CHAR(64) NULL`);
       await db.execute(`CREATE INDEX IF NOT EXISTS idx_respondent_email_hash ON respondent (email_hash)`);
       await db.execute(`CREATE INDEX IF NOT EXISTS idx_respondent_mobile_hash ON respondent (mobile_hash)`);
+      await db.execute(`ALTER TABLE respondent DROP CONSTRAINT IF EXISTS respondent_role_check`);
+      await db.execute(`ALTER TABLE respondent DROP CONSTRAINT IF EXISTS respondent_status_check`);
     } else {
       await db.execute(
         `ALTER TABLE Respondent

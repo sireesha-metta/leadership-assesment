@@ -1,3 +1,4 @@
+require("dotenv").config();
 const mysql = require("mysql2/promise");
 const { Pool: PgPool } = require("pg");
 
@@ -72,22 +73,49 @@ function normalizeSqlForPostgres(rawSql) {
 let dbExport = null;
 
 if (isPostgres) {
-  const pgPool = new PgPool({
-    host: process.env.DB_HOST || "127.0.0.1",
-    port: Number(process.env.DB_PORT || 5432),
-    user: process.env.DB_USER || "postgres",
-    password: process.env.DB_PASSWORD !== undefined ? String(process.env.DB_PASSWORD) : "postgrespassword",
-    database: process.env.DB_NAME || "leadership_assesment",
-    max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
-    ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
+  const poolConfig = {
+    max: Number(process.env.DB_POOL_MAX || 20),
+    min: Number(process.env.DB_POOL_MIN || 2),
+    idleTimeoutMillis: Number(process.env.DB_POOL_IDLE_TIMEOUT || 30000),
+    connectionTimeoutMillis: Number(process.env.DB_POOL_CONNECT_TIMEOUT || 10000),
+    keepAlive: true,
+  };
+
+  // Support full DATABASE_URL or individual parameters
+  if (process.env.DATABASE_URL) {
+    poolConfig.connectionString = process.env.DATABASE_URL;
+  } else {
+    poolConfig.host = process.env.DB_HOST || "127.0.0.1";
+    poolConfig.port = Number(process.env.DB_PORT || 5432);
+    poolConfig.user = process.env.DB_USER || "postgres";
+    poolConfig.password = process.env.DB_PASSWORD !== undefined ? String(process.env.DB_PASSWORD) : "postgrespassword";
+    poolConfig.database = process.env.DB_NAME || "leadership_assesment";
+  }
+
+  // Production SSL support
+  const enableSsl =
+    process.env.DB_SSL === "true" ||
+    process.env.PGSSLMODE === "require" ||
+    (process.env.DATABASE_URL && process.env.DATABASE_URL.includes("sslmode=require"));
+
+  if (enableSsl) {
+    poolConfig.ssl = {
+      rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED === "true",
+    };
+  }
+
+  const pgPool = new PgPool(poolConfig);
+
+  // Critical for production: prevent idle client errors from crashing process
+  pgPool.on("error", (err) => {
+    console.error("[PostgreSQL Pool Background Error]", err.message);
   });
 
   (async () => {
     try {
       const client = await pgPool.connect();
-      console.log(`[Database] Connected to PostgreSQL on ${process.env.DB_HOST || "127.0.0.1"}:${process.env.DB_PORT || 5432}/${process.env.DB_NAME || "leadership_assesment"}`);
+      const target = process.env.DATABASE_URL ? "DATABASE_URL" : `${poolConfig.host}:${poolConfig.port}/${poolConfig.database}`;
+      console.log(`[Database] Connected to PostgreSQL on ${target}`);
       client.release();
     } catch (err) {
       console.error("[Database] PostgreSQL Connection Failed:", err.message);
@@ -213,6 +241,12 @@ if (isPostgres) {
         release: () => client.release(),
       };
     },
+    ping: async () => {
+      const [rows] = await executePgQuery("SELECT 1 AS ping");
+      return rows && rows.length > 0;
+    },
+    close: () => pgPool.end(),
+    end: () => pgPool.end(),
   };
 } else {
   const mysqlPool = mysql.createPool({
@@ -227,7 +261,7 @@ if (isPostgres) {
     },
     connectTimeout: 60000,
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: Number(process.env.DB_POOL_MAX || 10),
     queueLimit: 0,
     enableKeepAlive: true,
   });
@@ -244,14 +278,24 @@ if (isPostgres) {
 
   dbExport = new Proxy(mysqlPool, {
     get(target, prop, receiver) {
+      if (prop === "isPg" || prop === "isPostgres") {
+        return false;
+      }
       if (prop === "execute") {
         return (...args) => withRetry(() => target.execute(...args));
       }
-
       if (prop === "query") {
         return (...args) => withRetry(() => target.query(...args));
       }
-
+      if (prop === "ping") {
+        return async () => {
+          const [rows] = await target.query("SELECT 1 AS ping");
+          return rows && rows.length > 0;
+        };
+      }
+      if (prop === "close") {
+        return () => target.end();
+      }
       return Reflect.get(target, prop, receiver);
     },
   });
