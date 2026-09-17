@@ -7,6 +7,10 @@ exports.getDrafts = async (req, res) => {
   try {
     await ensureRespondentSecuritySchema(pool);
 
+    const timeCondition = pool.isPg
+      ? "d.updated_at > (CURRENT_TIMESTAMP - INTERVAL '24 hours')"
+      : "d.updated_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)";
+
     const [rows] = await pool.query(`
       SELECT
         d.id,
@@ -21,7 +25,7 @@ exports.getDrafts = async (req, res) => {
       FROM assessment_drafts d
       JOIN respondent r ON r.id = d.respondent_id AND r.status = 'Active'
       WHERE d.assessment_type = 'leadership_reset'
-        AND d.updated_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
+        AND ${timeCondition}
       ORDER BY d.updated_at DESC
     `);
 

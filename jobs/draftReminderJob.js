@@ -11,6 +11,13 @@ function toPositiveInt(value, fallback) {
 }
 
 async function ensureDraftReminderColumns() {
+  if (db.isPg) {
+    await db.execute("ALTER TABLE assessment_drafts ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ NULL");
+    await db.execute("ALTER TABLE assessment_drafts ADD COLUMN IF NOT EXISTS reminder_attempts INT NOT NULL DEFAULT 0");
+    await db.execute("ALTER TABLE assessment_drafts ADD COLUMN IF NOT EXISTS reminder_last_error VARCHAR(500) NULL");
+    return;
+  }
+
   const [sentAtColumns] = await db.execute("SHOW COLUMNS FROM assessment_drafts LIKE 'reminder_sent_at'");
   if (sentAtColumns.length === 0) {
     await db.execute("ALTER TABLE assessment_drafts ADD COLUMN reminder_sent_at DATETIME NULL");
@@ -34,6 +41,10 @@ async function fetchPendingDraftReminders(afterHours, batchSize, maxAttempts) {
 
   await ensureRespondentSecuritySchema(db);
 
+  const timeCondition = db.isPg
+    ? `d.updated_at <= (CURRENT_TIMESTAMP - (${safeAfterHours} * INTERVAL '1 hour'))`
+    : `d.updated_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ${safeAfterHours} HOUR)`;
+
   const [rows] = await db.execute(
     `SELECT
       d.id,
@@ -53,12 +64,12 @@ async function fetchPendingDraftReminders(afterHours, batchSize, maxAttempts) {
      WHERE d.assessment_type = ?
        AND d.answered_count > 0
        AND s.id IS NULL
-       AND d.updated_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? HOUR)
-       AND IFNULL(d.reminder_attempts, 0) < ?
+       AND ${timeCondition}
+       AND COALESCE(d.reminder_attempts, 0) < ?
        AND (d.reminder_sent_at IS NULL OR d.reminder_sent_at < d.updated_at)
      ORDER BY d.updated_at ASC
      LIMIT ${safeBatchSize}`,
-    [ASSESSMENT_TYPE, safeAfterHours, safeMaxAttempts]
+    [ASSESSMENT_TYPE, safeMaxAttempts]
   );
 
   return rows
@@ -92,10 +103,11 @@ function parseDraftPayload(rawPayload) {
 }
 
 async function markReminderSuccess(draftId) {
+  const tsExpr = db.isPg ? "CURRENT_TIMESTAMP" : "UTC_TIMESTAMP()";
   await db.execute(
     `UPDATE assessment_drafts
-     SET reminder_sent_at = UTC_TIMESTAMP(),
-         reminder_attempts = IFNULL(reminder_attempts, 0) + 1,
+     SET reminder_sent_at = ${tsExpr},
+         reminder_attempts = COALESCE(reminder_attempts, 0) + 1,
          reminder_last_error = NULL
      WHERE id = ?`,
     [draftId]
@@ -105,7 +117,7 @@ async function markReminderSuccess(draftId) {
 async function markReminderFailure(draftId, errorMessage) {
   await db.execute(
     `UPDATE assessment_drafts
-     SET reminder_attempts = IFNULL(reminder_attempts, 0) + 1,
+     SET reminder_attempts = COALESCE(reminder_attempts, 0) + 1,
          reminder_last_error = ?
      WHERE id = ?`,
     [String(errorMessage || "Unknown error").slice(0, 500), draftId]
@@ -238,12 +250,13 @@ function startDraftReminderJob() {
 
 
 async function deleteExpiredDrafts() {
-  const [result] = await db.execute(
-    `DELETE FROM assessment_drafts
-     WHERE updated_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)`
-  );
+  const deleteSql = db.isPg
+    ? `DELETE FROM assessment_drafts WHERE updated_at <= (CURRENT_TIMESTAMP - INTERVAL '24 hours')`
+    : `DELETE FROM assessment_drafts WHERE updated_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)`;
 
-  console.log(`Deleted ${result.affectedRows} expired draft(s).`);
+  const [result] = await db.execute(deleteSql);
+
+  console.log(`Deleted ${result.affectedRows || 0} expired draft(s).`);
 }
 
 module.exports = {

@@ -10,6 +10,15 @@ const { runDraftReminderCycle } = require("../jobs/draftReminderJob");
 const Uploaded_file = require("../middleware/uploads");
 
 async function getTableColumns(tableName) {
+  if (db.isPg) {
+    const [rows] = await db.execute(
+      `SELECT column_name AS "COLUMN_NAME" FROM information_schema.columns
+       WHERE table_schema = CURRENT_SCHEMA() AND lower(table_name) = lower(?)`,
+      [tableName]
+    );
+    return new Set(rows.map((row) => String(row.COLUMN_NAME || row.column_name || "").toLowerCase()));
+  }
+
   const [rows] = await db.execute(
     `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,

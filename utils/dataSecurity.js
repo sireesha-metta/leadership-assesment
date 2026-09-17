@@ -109,37 +109,48 @@ async function ensureRespondentSecuritySchema(db) {
   }
 
   respondentSchemaReadyPromise = (async () => {
-    await db.execute(
-      `ALTER TABLE Respondent
-       MODIFY firstname VARCHAR(512) NOT NULL,
-       MODIFY lastname VARCHAR(512) NULL,
-       MODIFY mobile VARCHAR(512) NULL,
-       MODIFY email VARCHAR(512) NOT NULL`
-    );
+    if (db.isPg) {
+      await db.execute(`ALTER TABLE respondent ALTER COLUMN firstname TYPE VARCHAR(512)`);
+      await db.execute(`ALTER TABLE respondent ALTER COLUMN lastname TYPE VARCHAR(512)`);
+      await db.execute(`ALTER TABLE respondent ALTER COLUMN mobile TYPE VARCHAR(512)`);
+      await db.execute(`ALTER TABLE respondent ALTER COLUMN email TYPE VARCHAR(512)`);
+      await db.execute(`ALTER TABLE respondent ADD COLUMN IF NOT EXISTS email_hash CHAR(64) NULL`);
+      await db.execute(`ALTER TABLE respondent ADD COLUMN IF NOT EXISTS mobile_hash CHAR(64) NULL`);
+      await db.execute(`CREATE INDEX IF NOT EXISTS idx_respondent_email_hash ON respondent (email_hash)`);
+      await db.execute(`CREATE INDEX IF NOT EXISTS idx_respondent_mobile_hash ON respondent (mobile_hash)`);
+    } else {
+      await db.execute(
+        `ALTER TABLE Respondent
+         MODIFY firstname VARCHAR(512) NOT NULL,
+         MODIFY lastname VARCHAR(512) NULL,
+         MODIFY mobile VARCHAR(512) NULL,
+         MODIFY email VARCHAR(512) NOT NULL`
+      );
 
-    const [emailHashCols] = await db.execute("SHOW COLUMNS FROM Respondent LIKE 'email_hash'");
-    if (emailHashCols.length === 0) {
-      await db.execute("ALTER TABLE Respondent ADD COLUMN email_hash CHAR(64) NULL");
-    }
+      const [emailHashCols] = await db.execute("SHOW COLUMNS FROM Respondent LIKE 'email_hash'");
+      if (emailHashCols.length === 0) {
+        await db.execute("ALTER TABLE Respondent ADD COLUMN email_hash CHAR(64) NULL");
+      }
 
-    const [mobileHashCols] = await db.execute("SHOW COLUMNS FROM Respondent LIKE 'mobile_hash'");
-    if (mobileHashCols.length === 0) {
-      await db.execute("ALTER TABLE Respondent ADD COLUMN mobile_hash CHAR(64) NULL");
-    }
+      const [mobileHashCols] = await db.execute("SHOW COLUMNS FROM Respondent LIKE 'mobile_hash'");
+      if (mobileHashCols.length === 0) {
+        await db.execute("ALTER TABLE Respondent ADD COLUMN mobile_hash CHAR(64) NULL");
+      }
 
-    const [emailHashIdx] = await db.execute("SHOW INDEX FROM Respondent WHERE Key_name = 'idx_respondent_email_hash'");
-    if (emailHashIdx.length === 0) {
-      await db.execute("CREATE INDEX idx_respondent_email_hash ON Respondent (email_hash)");
-    }
+      const [emailHashIdx] = await db.execute("SHOW INDEX FROM Respondent WHERE Key_name = 'idx_respondent_email_hash'");
+      if (emailHashIdx.length === 0) {
+        await db.execute("CREATE INDEX idx_respondent_email_hash ON Respondent (email_hash)");
+      }
 
-    const [mobileHashIdx] = await db.execute("SHOW INDEX FROM Respondent WHERE Key_name = 'idx_respondent_mobile_hash'");
-    if (mobileHashIdx.length === 0) {
-      await db.execute("CREATE INDEX idx_respondent_mobile_hash ON Respondent (mobile_hash)");
+      const [mobileHashIdx] = await db.execute("SHOW INDEX FROM Respondent WHERE Key_name = 'idx_respondent_mobile_hash'");
+      if (mobileHashIdx.length === 0) {
+        await db.execute("CREATE INDEX idx_respondent_mobile_hash ON Respondent (mobile_hash)");
+      }
     }
 
     const [rows] = await db.execute(
       `SELECT id, firstname, lastname, mobile, email, password, email_hash, mobile_hash
-       FROM Respondent`
+       FROM respondent`
     );
 
     for (const row of rows) {
@@ -174,7 +185,7 @@ async function ensureRespondentSecuritySchema(db) {
       }
 
       await db.execute(
-        `UPDATE Respondent
+        `UPDATE respondent
          SET firstname = ?, lastname = ?, mobile = ?, email = ?, email_hash = ?, mobile_hash = ?, password = ?
          WHERE id = ?`,
         [
