@@ -184,7 +184,7 @@ async function listUsersByRole(role) {
   const [rows] = await db.execute(
     `SELECT id, firstname, lastname, mobile, email, status, created_at, updated_at
      FROM Respondent
-     WHERE role = ?
+     WHERE UPPER(role) = UPPER(?)
      ORDER BY id DESC`,
     [role]
   );
@@ -274,7 +274,7 @@ async function updateUserByRoleAndId(role, id, payload) {
   const [result] = await db.execute(
     `UPDATE Respondent
      SET ${fields.join(", ")}
-     WHERE id = ? AND role = ?`,
+     WHERE id = ? AND UPPER(role) = UPPER(?)`,
     values
   );
 
@@ -369,7 +369,7 @@ async function deleteUserByRoleAndId(role, id) {
   }
 
   const [result] = await db.execute(
-    "UPDATE Respondent SET status = 'Inactive' WHERE id = ? AND role = ?",
+    "UPDATE Respondent SET status = 'Inactive' WHERE id = ? AND UPPER(role) = UPPER(?)",
     [Number(id), role]
   );
 
@@ -410,7 +410,7 @@ exports.login = async (req, res) => {
     const [rows] = await db.execute(
       `SELECT *
        FROM respondent
-       WHERE status = 'Active'
+       WHERE UPPER(status) = 'ACTIVE'
          AND (${conditions.join(" OR ")})`,
       params
     );
@@ -820,7 +820,7 @@ exports.forgotPassword = async (req, res) => {
     }
 
     const [rows] = await db.execute(
-      "SELECT id FROM Respondent WHERE email_hash = ? AND status = 'Active'",
+      "SELECT id FROM Respondent WHERE email_hash = ? AND UPPER(status) = 'ACTIVE'",
       [emailHash]
     );
 

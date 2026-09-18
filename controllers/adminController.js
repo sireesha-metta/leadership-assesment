@@ -129,6 +129,8 @@ exports.exportSubmissions = async (req, res) => {
         r.mobile
       FROM assessment_submissions s
       JOIN respondent r ON r.id = s.respondent_id
+      WHERE (r.status IS NULL OR UPPER(r.status) != 'INACTIVE')
+        AND (s.status IS NULL OR UPPER(s.status) != 'INACTIVE')
       ORDER BY s.submitted_at DESC
     `);
 
